@@ -84,27 +84,30 @@ ZSync.Net/
 ## Architectural Flow
 
 ```
-[Target File: app-v1.0.1.zip]
+[Target File: rootfs-v1.0.1.tar (or disk.img / service.bin)]
         │
         ▼ (ZSyncControlBuilder.GenerateAllAsync - Single I/O Pass)
- ┌──────────────────────┬──────────────────────┬──────────────────────┐
- │                      │                      │                      │
- ▼                      ▼                      ▼                      ▼
-app-v1.0.1.zip.zsync   app-v1.0.1.zip.gz      app-v1.0.1.zip.gz.zsync (Hashes & offsets)
-(Uncompressed control) (Block-compressed payload)
+ ┌──────────────────────────┬──────────────────────────┬──────────────────────────┐
+ │                          │                          │                          │
+ ▼                          ▼                          ▼                          ▼
+rootfs-v1.0.1.tar.zsync    rootfs-v1.0.1.tar.gz       rootfs-v1.0.1.tar.gz.zsync (Hashes & offsets)
+(Uncompressed control)     (Block-compressed payload)
 
 ──────────────────────────────────────────────────────────────────────────────────
 
 [Client Synchronization Flow]
- 1. Read app-v1.0.1.zip.gz.zsync control file
- 2. Scan local existing app-v1.0.0.zip with sliding-window RollingHash + FastXxHash64
-    ├── Block 0: MATCHED locally ──► Copy from local file
-    ├── Block 1: MATCHED locally ──► Copy from local file
+ 1. Read rootfs-v1.0.1.tar.gz.zsync control file
+ 2. Scan local existing rootfs-v1.0.0.tar with sliding-window RollingHash + FastXxHash64
+    ├── Block 0: MATCHED locally ──► Copy directly from local file
+    ├── Block 1: MATCHED locally ──► Copy directly from local file
     ├── Block 2: MISSING ──────────► Fetch compressed range from HTTP / SMB share ──► Decompress on the fly
-    └── Block 3: MATCHED locally ──► Copy from local file
- 3. Output app-v1.0.1.zip reconstructed in staging
+    └── Block 3: MATCHED locally ──► Copy directly from local file
+ 3. Output rootfs-v1.0.1.tar reconstructed in staging
  4. Verify SHA256 and xxHash64 against control file
 ```
+
+> **Why Tarballs, Raw Binaries, and Disk Images Instead of Zip?**
+> Standard `.zip` archives are internally compressed using sliding dictionaries, which scramble byte alignments whenever a file is added or changed. For maximum delta efficiency, bundle files as an uncompressed archive (`.tar`), raw binaries (`.bin`/`.dll`), or disk/PXE images (`.iso`/`.img`). `ZSync.Net` compresses the payload into `.gz` for network transport while maintaining 100% block alignment against your local uncompressed files.
 
 ---
 
@@ -112,29 +115,30 @@ app-v1.0.1.zip.zsync   app-v1.0.1.zip.gz      app-v1.0.1.zip.gz.zsync (Hashes & 
 
 ### 1. Generate Control Files & GZip Payload (Single Pass)
 ```bash
-dotnet ZSync.Cli.dll make app-v1.0.1.zip --block-size 4096 --out-dir /dist
+# Example with an uncompressed tarball or raw image
+dotnet ZSync.Cli.dll make rootfs-v1.0.1.tar --block-size 4096 --out-dir /dist
 ```
 Generates at once:
-- `/dist/app-v1.0.1.zip.zsync` (uncompressed control file)
-- `/dist/app-v1.0.1.zip.gz` (block-compressed GZip payload)
-- `/dist/app-v1.0.1.zip.gz.zsync` (compressed control file)
+- `/dist/rootfs-v1.0.1.tar.zsync` (uncompressed control file)
+- `/dist/rootfs-v1.0.1.tar.gz` (block-compressed GZip payload)
+- `/dist/rootfs-v1.0.1.tar.gz.zsync` (compressed control file)
 
 ### 2. Synchronize from HTTP/HTTPS
 ```bash
 dotnet ZSync.Cli.dll sync \
-  --control https://updates.example.com/app-v1.0.1.zip.gz.zsync \
-  --payload https://updates.example.com/app-v1.0.1.zip.gz \
-  --source /opt/myapp/current/app-v1.0.0.zip \
-  --target /opt/myapp/staging/app-v1.0.1.zip
+  --control https://updates.example.com/rootfs-v1.0.1.tar.gz.zsync \
+  --payload https://updates.example.com/rootfs-v1.0.1.tar.gz \
+  --source /opt/myapp/current/rootfs-v1.0.0.tar \
+  --target /opt/myapp/staging/rootfs-v1.0.1.tar
 ```
 
 ### 3. Synchronize from SMB / UNC Network Share
 ```bash
 dotnet ZSync.Cli.dll sync \
-  --control \\fileserver\updates\app-v1.0.1.zip.gz.zsync \
-  --payload \\fileserver\updates\app-v1.0.1.zip.gz \
-  --source /opt/myapp/current/app-v1.0.0.zip \
-  --target /opt/myapp/staging/app-v1.0.1.zip
+  --control \\fileserver\updates\rootfs-v1.0.1.tar.gz.zsync \
+  --payload \\fileserver\updates\rootfs-v1.0.1.tar.gz \
+  --source /opt/myapp/current/rootfs-v1.0.0.tar \
+  --target /opt/myapp/staging/rootfs-v1.0.1.tar
 ```
 
 ---
@@ -147,7 +151,7 @@ using ZSync.Core.Engine;
 
 // Generate .zsync, .gz, and .gz.zsync at once with minimum disk I/O
 var summary = await ZSyncControlBuilder.GenerateAllAsync(
-    inputFilePath: "app-1.0.1.zip",
+    inputFilePath: "rootfs-v1.0.1.tar",
     outputDirectory: "/dist",
     options: new ZSyncControlBuilderOptions { BlockSize = 4096 });
 ```
@@ -159,17 +163,17 @@ using ZSync.Core.Model;
 using ZSync.Core.Transport;
 
 // 1. Load control file (from HTTP URL, SMB path, or local file)
-var control = await ZSyncControlFile.LoadAsync("https://updates.example.com/app-1.0.1.zip.gz.zsync");
+var control = await ZSyncControlFile.LoadAsync("https://updates.example.com/rootfs-v1.0.1.tar.gz.zsync");
 
 // 2. Open range source (automatically detects HTTP vs SMB vs File)
-using var rangeSource = ByteRangeSourceFactory.Create("https://updates.example.com/app-1.0.1.zip.gz");
+using var rangeSource = ByteRangeSourceFactory.Create("https://updates.example.com/rootfs-v1.0.1.tar.gz");
 
 // 3. Reconstruct target file using existing local build
 var result = await ZSyncSyncEngine.SyncAsync(
     control: control,
     rangeSource: rangeSource,
-    localSourceFile: "app-1.0.0.zip",
-    destinationPath: "app-1.0.1.zip");
+    localSourceFile: "rootfs-v1.0.0.tar",
+    destinationPath: "rootfs-v1.0.1.tar");
 
 Console.WriteLine($"Bandwidth saved: {result.BandwidthSavingsPercentage:F1}%");
 Console.WriteLine($"Checksum verified: {result.ChecksumVerified}");
