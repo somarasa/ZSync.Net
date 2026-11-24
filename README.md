@@ -84,30 +84,27 @@ ZSync.Net/
 ## Architectural Flow
 
 ```
-[Target File: rootfs-v1.0.1.tar (or disk.img / service.bin)]
+[Target File: Quantum.Worker.dll (or service.exe / database.db)]
         │
         ▼ (ZSyncControlBuilder.GenerateAllAsync - Single I/O Pass)
- ┌──────────────────────────┬──────────────────────────┬──────────────────────────┐
- │                          │                          │                          │
- ▼                          ▼                          ▼                          ▼
-rootfs-v1.0.1.tar.zsync    rootfs-v1.0.1.tar.gz       rootfs-v1.0.1.tar.gz.zsync (Hashes & offsets)
-(Uncompressed control)     (Block-compressed payload)
+ ┌──────────────────────────────┬──────────────────────────────┬──────────────────────────────┐
+ │                              │                              │                              │
+ ▼                              ▼                              ▼                              ▼
+Quantum.Worker.dll.zsync       Quantum.Worker.dll.gz          Quantum.Worker.dll.gz.zsync
+(Uncompressed control)         (Block-compressed payload)     (Hashes & compressed offsets)
 
 ──────────────────────────────────────────────────────────────────────────────────
 
 [Client Synchronization Flow]
- 1. Read rootfs-v1.0.1.tar.gz.zsync control file
- 2. Scan local existing rootfs-v1.0.0.tar with sliding-window RollingHash + FastXxHash64
+ 1. Read Quantum.Worker.dll.gz.zsync control file
+ 2. Scan local existing Quantum.Worker.dll with sliding-window RollingHash + FastXxHash64
     ├── Block 0: MATCHED locally ──► Copy directly from local file
     ├── Block 1: MATCHED locally ──► Copy directly from local file
     ├── Block 2: MISSING ──────────► Fetch compressed range from HTTP / SMB share ──► Decompress on the fly
     └── Block 3: MATCHED locally ──► Copy directly from local file
- 3. Output rootfs-v1.0.1.tar reconstructed in staging
+ 3. Output Quantum.Worker.dll reconstructed in staging
  4. Verify SHA256 and xxHash64 against control file
 ```
-
-> **Why Tarballs, Raw Binaries, and Disk Images Instead of Zip?**
-> Standard `.zip` archives are internally compressed using sliding dictionaries, which scramble byte alignments whenever a file is added or changed. For maximum delta efficiency, bundle files as an uncompressed archive (`.tar`), raw binaries (`.bin`/`.dll`), or disk/PXE images (`.iso`/`.img`). `ZSync.Net` compresses the payload into `.gz` for network transport while maintaining 100% block alignment against your local uncompressed files.
 
 ---
 
@@ -115,30 +112,30 @@ rootfs-v1.0.1.tar.zsync    rootfs-v1.0.1.tar.gz       rootfs-v1.0.1.tar.gz.zsync
 
 ### 1. Generate Control Files & GZip Payload (Single Pass)
 ```bash
-# Example with an uncompressed tarball or raw image
-dotnet ZSync.Cli.dll make rootfs-v1.0.1.tar --block-size 4096 --out-dir /dist
+# Example with a service binary / DLL
+dotnet ZSync.Cli.dll make Quantum.Worker.dll --block-size 4096 --out-dir /dist
 ```
 Generates at once:
-- `/dist/rootfs-v1.0.1.tar.zsync` (uncompressed control file)
-- `/dist/rootfs-v1.0.1.tar.gz` (block-compressed GZip payload)
-- `/dist/rootfs-v1.0.1.tar.gz.zsync` (compressed control file)
+- `/dist/Quantum.Worker.dll.zsync` (uncompressed control file)
+- `/dist/Quantum.Worker.dll.gz` (block-compressed GZip payload)
+- `/dist/Quantum.Worker.dll.gz.zsync` (compressed control file)
 
 ### 2. Synchronize from HTTP/HTTPS
 ```bash
 dotnet ZSync.Cli.dll sync \
-  --control https://updates.example.com/rootfs-v1.0.1.tar.gz.zsync \
-  --payload https://updates.example.com/rootfs-v1.0.1.tar.gz \
-  --source /opt/myapp/current/rootfs-v1.0.0.tar \
-  --target /opt/myapp/staging/rootfs-v1.0.1.tar
+  --control https://updates.example.com/Quantum.Worker.dll.gz.zsync \
+  --payload https://updates.example.com/Quantum.Worker.dll.gz \
+  --source /opt/quantum/current/Quantum.Worker.dll \
+  --target /opt/quantum/staging/Quantum.Worker.dll
 ```
 
 ### 3. Synchronize from SMB / UNC Network Share
 ```bash
 dotnet ZSync.Cli.dll sync \
-  --control \\fileserver\updates\rootfs-v1.0.1.tar.gz.zsync \
-  --payload \\fileserver\updates\rootfs-v1.0.1.tar.gz \
-  --source /opt/myapp/current/rootfs-v1.0.0.tar \
-  --target /opt/myapp/staging/rootfs-v1.0.1.tar
+  --control \\fileserver\updates\Quantum.Worker.dll.gz.zsync \
+  --payload \\fileserver\updates\Quantum.Worker.dll.gz \
+  --source /opt/quantum/current/Quantum.Worker.dll \
+  --target /opt/quantum/staging/Quantum.Worker.dll
 ```
 
 ---
@@ -151,7 +148,7 @@ using ZSync.Core.Engine;
 
 // Generate .zsync, .gz, and .gz.zsync at once with minimum disk I/O
 var summary = await ZSyncControlBuilder.GenerateAllAsync(
-    inputFilePath: "rootfs-v1.0.1.tar",
+    inputFilePath: "Quantum.Worker.dll",
     outputDirectory: "/dist",
     options: new ZSyncControlBuilderOptions { BlockSize = 4096 });
 ```
@@ -163,17 +160,17 @@ using ZSync.Core.Model;
 using ZSync.Core.Transport;
 
 // 1. Load control file (from HTTP URL, SMB path, or local file)
-var control = await ZSyncControlFile.LoadAsync("https://updates.example.com/rootfs-v1.0.1.tar.gz.zsync");
+var control = await ZSyncControlFile.LoadAsync("https://updates.example.com/Quantum.Worker.dll.gz.zsync");
 
 // 2. Open range source (automatically detects HTTP vs SMB vs File)
-using var rangeSource = ByteRangeSourceFactory.Create("https://updates.example.com/rootfs-v1.0.1.tar.gz");
+using var rangeSource = ByteRangeSourceFactory.Create("https://updates.example.com/Quantum.Worker.dll.gz");
 
 // 3. Reconstruct target file using existing local build
 var result = await ZSyncSyncEngine.SyncAsync(
     control: control,
     rangeSource: rangeSource,
-    localSourceFile: "rootfs-v1.0.0.tar",
-    destinationPath: "rootfs-v1.0.1.tar");
+    localSourceFile: "Quantum.Worker.dll",
+    destinationPath: "Quantum.Worker.dll");
 
 Console.WriteLine($"Bandwidth saved: {result.BandwidthSavingsPercentage:F1}%");
 Console.WriteLine($"Checksum verified: {result.ChecksumVerified}");
