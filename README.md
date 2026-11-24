@@ -1,8 +1,33 @@
 # ZSync.Net
 
+[![CI & NuGet Pack](https://github.com/somarasa/ZSync.Net/actions/workflows/ci.yml/badge.svg)](https://github.com/somarasa/ZSync.Net/actions/workflows/ci.yml)
+[![NuGet](https://img.shields.io/nuget/v/ZSync.Net.svg)](https://www.nuget.org/packages/ZSync.Net)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%2010.0-blue.svg)](https://dotnet.microsoft.com/)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)]()
+
 High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HDiffPatch with xxHash64 and Multi-Transport SMB / HTTP Range Requests).
 
 **Zero external NuGet dependencies** — 100% pure .NET.
+
+---
+
+## Installation
+
+### C# Library (NuGet)
+```bash
+dotnet add package ZSync.Net
+```
+
+### Global CLI Tool
+```bash
+dotnet tool install --global ZSync.Net.Cli
+```
+Once installed, execute commands globally via `zsync` (or `dotnet zsync`):
+```bash
+zsync make Quantum.Worker.dll
+zsync sync --control https://updates.example.com/Quantum.Worker.dll.gz.zsync --target Quantum.Worker.dll
+```
 
 ---
 
@@ -200,9 +225,20 @@ Console.WriteLine($"Checksum verified: {result.ChecksumVerified}");
 # Build solution
 dotnet build ZSync.Net.slnx
 
-# Run test suite
+# Run test suite across all target frameworks (.NET 8 and .NET 10)
 dotnet test ZSync.Net.slnx
+
+# Pack NuGet packages and .NET Global Tool
+dotnet pack ZSync.Net.slnx -c Release -o ./artifacts
 ```
+
+---
+
+## Acknowledgements & Prior Art
+
+- **[Hou Sisong (sisong/hdiffpatch)](https://github.com/sisong/hdiffpatch)**: Pioneered high-performance binary diffing algorithms and the block-compressed GZip sync format (`hsynz`).
+- **[Colin Phipps (zsync)](http://zsync.moria.org.uk/)**: Invented the original client-driven HTTP range partial download algorithm.
+- **[Yann Collet (xxHash)](https://github.com/Cyan4973/xxHash)**: Creator of the ultra-fast xxHash algorithm.
 
 ---
 

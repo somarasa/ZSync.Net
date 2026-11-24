@@ -1,9 +1,39 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- NuGet Package Metadata -->
+    <IsPackable>true</IsPackable>
+    <PackageId>ZSync.Net</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>somarasa</Authors>
+    <Company>somarasa</Company>
+    <Title>ZSync.Net</Title>
+    <Description>High-performance pure C# delta synchronization library. Modernizes zsync and HDiffPatch with xxHash64, multi-transport HTTP Range + Windows SMB/UNC file seeks, atomic in-place patching, and single-pass GZip generation. Zero external dependencies.</Description>
+    <PackageProjectUrl>https://github.com/somarasa/ZSync.Net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/somarasa/ZSync.Net.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageTags>zsync;hdiffpatch;delta;binary-diff;xxhash64;http-range;smb;unc;synchronization;in-place-update;zero-dependencies</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Symbols & Source Link -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>

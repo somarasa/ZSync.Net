@@ -1,14 +1,31 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
-  <ItemGroup>
-    <ProjectReference Include="..\ZSync.Core\ZSync.Core.csproj" />
-  </ItemGroup>
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- .NET Tool Packaging -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>zsync</ToolCommandName>
+    <PackageId>ZSync.Net.Cli</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>somarasa</Authors>
+    <Description>Cross-platform CLI tool for ZSync.Net — high-performance xxHash64 and GZip delta synchronization over HTTP and SMB.</Description>
+    <PackageProjectUrl>https://github.com/somarasa/ZSync.Net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/somarasa/ZSync.Net.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>zsync;hdiffpatch;cli;delta;binary-diff;xxhash64;http-range;smb</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ZSync.Core\ZSync.Core.csproj" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>
