@@ -117,5 +117,51 @@ namespace ZSync.Tests
             var destinationBytes = await File.ReadAllBytesAsync(destinationFile);
             Assert.That(destinationBytes, Is.EqualTo(targetData));
         }
+
+        [Test]
+        public async Task SyncAsync_InPlaceUpdate_AtomicallyReplacesFileWithNoLeftovers()
+        {
+            int blockSize = 1024;
+            var targetData = new byte[4096];
+            for (int i = 0; i < targetData.Length; i++) targetData[i] = (byte)((i % 32) * 9);
+
+            // Existing file on disk has 3 of 4 blocks matching
+            var localData = (byte[])targetData.Clone();
+            for (int i = 2048; i < 3072; i++) localData[i] = (byte)(localData[i] ^ 0xFF);
+
+            var activeFile = Path.Combine(_tempDir, "Quantum.Worker.dll");
+            await File.WriteAllBytesAsync(activeFile, localData);
+
+            // Generate control for target
+            var remoteSourceFile = Path.Combine(_tempDir, "remote_payload.bin");
+            await File.WriteAllBytesAsync(remoteSourceFile, targetData);
+
+            var summary = await ZSyncControlBuilder.GenerateAllAsync(
+                remoteSourceFile,
+                _tempDir,
+                new ZSyncControlBuilderOptions { BlockSize = blockSize });
+
+            var control = await ZSync.Core.Model.ZSyncControlFile.LoadAsync(summary.UncompressedControlPath);
+            using var rangeSource = new FileByteRangeSource(remoteSourceFile);
+
+            // Perform in-place update: localSourceFile is null, destinationPath is activeFile!
+            var result = await ZSyncSyncEngine.SyncAsync(
+                control: control,
+                rangeSource: rangeSource,
+                localSourceFile: null,
+                destinationPath: activeFile);
+
+            Assert.That(result.ChecksumVerified, Is.True);
+            Assert.That(result.LocalReusedBytes, Is.EqualTo(3072));
+            Assert.That(result.DownloadedBytes, Is.EqualTo(1024));
+
+            // Verify activeFile now contains new targetData
+            var activeBytes = await File.ReadAllBytesAsync(activeFile);
+            Assert.That(activeBytes, Is.EqualTo(targetData));
+
+            // Verify NO leftover .zsnew.* files exist in directory
+            var leftovers = Directory.GetFiles(_tempDir, "*zsnew*");
+            Assert.That(leftovers, Is.Empty, "All temporary working files must be cleaned up on completion.");
+        }
     }
 }

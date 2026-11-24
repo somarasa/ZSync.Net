@@ -181,6 +181,12 @@ namespace ZSync.Cli
                 return 1;
             }
 
+            if (string.IsNullOrWhiteSpace(localSourceFile) && File.Exists(targetDestination))
+            {
+                localSourceFile = targetDestination;
+                Console.WriteLine($"[ZSync] In-place patch mode enabled: updating '{targetDestination}' atomically.");
+            }
+
             Console.WriteLine($"[ZSync] Target file: '{targetDestination}' ({control.FileLength / 1024.0 / 1024.0:F2} MB, {control.Blocks.Count:N0} blocks)");
             if (!string.IsNullOrWhiteSpace(localSourceFile))
             {

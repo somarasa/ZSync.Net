@@ -27,6 +27,10 @@ High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HD
    - Only missing blocks are downloaded.
    - When using the `.gz` payload, those missing blocks are downloaded in GZip-compressed format and decompressed on the fly into the target destination.
 
+6. **Atomic In-Place File Patching**:
+   - When updating an existing file in-place, `ZSync.Net` reads existing blocks from the target file, constructs the new build in a temporary sibling (`.zsnew.<id>`), verifies the whole-file checksum, and atomically switches places (`File.Move(..., overwrite: true)`).
+   - Leftovers are automatically removed on success. If verification fails, the original active file is completely untouched.
+
 ---
 
 ## Solution Structure
@@ -138,6 +142,16 @@ dotnet ZSync.Cli.dll sync \
   --payload \\fileserver\updates\Quantum.Worker.dll.gz \
   --source /opt/quantum/current/Quantum.Worker.dll \
   --target /opt/quantum/staging/Quantum.Worker.dll
+```
+
+### 4. Atomic In-Place Patching (Single `--target` Argument)
+```bash
+# When --source is omitted, ZSync automatically uses the existing target file as the base,
+# streams delta chunks into an atomic sibling (.zsnew.xxxx), verifies checksum, switches places,
+# and removes all temporary leftovers:
+dotnet ZSync.Cli.dll sync \
+  --control https://updates.example.com/Quantum.Worker.dll.gz.zsync \
+  --target /opt/quantum/Quantum.Worker.dll
 ```
 
 ---
