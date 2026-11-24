@@ -10,7 +10,7 @@ High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HD
 
 1. **Client-Driven Delta Sync (Zero Server Compute)**:
    - Does not require a server-side daemon or active compute process.
-   - Works over any standard HTTP/HTTPS web server (Nginx, Apache, GitLab Generic Packages, S3, MinIO, CDN) using standard `Range: bytes=start-end` requests.
+   - Works over any standard HTTP/HTTPS web server (Nginx, Apache, GitLab Generic Packages, S3, MinIO, CDN) using standard RFC 7233 `Range: bytes=start-end` requests.
 
 2. **Native SMB / UNC & Local File Share Support**:
    - Random-access streaming over Windows SMB file shares (`\\server\share\...`) and local files (`file://`).
@@ -18,7 +18,7 @@ High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HD
 
 3. **Modern xxHash64 (RAM Speed Hashing)**:
    - Replaces slow legacy MD4/MD5 hashes with **xxHash64** (>10 GB/s on modern CPUs) for collision-resistant block verification.
-   - Combined with an O(1) sliding-window Adler-32 rolling hash.
+   - Combined with an $O(1)$ sliding-window Adler-32 rolling hash for fast offset-shifted block discovery.
 
 4. **HDiffPatch Single-Pass GZip Generation (Minimized I/O)**:
    - Generates the uncompressed control file (`.zsync`), the block-compressed GZip payload (`.gz`), and the compressed control file (`.gz.zsync`) in a **single streaming pass over the input file**, cutting disk I/O to the absolute minimum.
@@ -36,24 +36,74 @@ ZSync.Net/
 ├── src/
 │   ├── ZSync.Core/
 │   │   ├── Hashing/
-│   │   │   ├── FastXxHash64.cs          # Ultra-fast 64-bit xxHash (0 external dependencies)
-│   │   │   └── RollingHash.cs           # O(1) sliding-window rolling hash
+│   │   │   ├── FastXxHash64.cs          # Pure C# 64-bit xxHash (>10 GB/s, 0 external deps)
+│   │   │   └── RollingHash.cs           # O(1) sliding-window Adler-32 rolling hash
 │   │   ├── Model/
 │   │   │   ├── BlockChecksum.cs         # Block metadata (weak hash, xxHash64, compressed offsets)
-│   │   │   ├── ByteRange.cs             # Range coalescing helper
-│   │   │   └── ZSyncControlFile.cs      # Binary & JSON control file reader/writer
+│   │   │   ├── ByteRange.cs             # Range coalescing helper to minimize roundtrips
+│   │   │   └── ZSyncControlFile.cs      # Binary & JSON control file reader/writer (.zsync)
 │   │   ├── Transport/
-│   │   │   ├── IByteRangeSource.cs      # Transport abstraction
-│   │   │   ├── FileByteRangeSource.cs   # SMB / UNC / local FileStream random-access
-│   │   │   ├── HttpByteRangeSource.cs   # RFC 7233 HTTP Range requests
-│   │   │   └── ByteRangeSourceFactory.cs# Automatic transport selector
+│   │   │   ├── IByteRangeSource.cs      # Transport abstraction for random-access reading
+│   │   │   ├── FileByteRangeSource.cs   # SMB / UNC (\\server\share\...) & local FileStream seeks
+│   │   │   ├── HttpByteRangeSource.cs   # RFC 7233 HTTP Range requests (Range: bytes=X-Y)
+│   │   │   └── ByteRangeSourceFactory.cs# Automatic transport selector (http/https vs smb/file)
 │   │   └── Engine/
 │   │       ├── ZSyncControlBuilder.cs   # Single-pass I/O generator (.zsync + .gz + .gz.zsync)
-│   │       ├── ZSyncBlockMatcher.cs     # Sliding-window matcher for local cache
-│   │       └── ZSyncSyncEngine.cs       # Multi-transport delta reconstructor
-│   └── ZSync.Cli/                       # Standalone CLI tool
-└── tests/
-    └── ZSync.Tests/                     # Comprehensive test suite
+│   │       ├── ZSyncBlockMatcher.cs     # Sliding-window matcher scanning local base build
+│   │       └── ZSyncSyncEngine.cs       # Multi-transport delta reconstructor & verifier
+│   └── ZSync.Cli/                       # Standalone CLI tool (make & sync commands)
+├── tests/
+│   └── ZSync.Tests/                     # Comprehensive test suite (10/10 tests passing)
+│       ├── FastXxHash64Tests.cs         # Hashing correctness & multi-block slicing
+│       ├── RollingHashTests.cs          # O(1) rolling update equivalence proof
+│       ├── TransportTests.cs            # SMB/File & HTTP Range mock transport tests
+│       ├── ZSyncControlBuilderTests.cs  # Single-pass all-in-one generator tests
+│       └── ZSyncSyncEngineTests.cs      # End-to-end delta sync & verification tests
+├── ZSync.Net.slnx                       # Solution file
+└── README.md
+```
+
+### Detailed Component Responsibilities
+
+| Namespace / Directory | Class | Purpose |
+|---|---|---|
+| `ZSync.Core.Hashing` | `FastXxHash64` | Pure C# implementation of Yann Collet's 64-bit xxHash algorithm. Used for 100% collision-resistant strong block identification and whole-file integrity verification. |
+| `ZSync.Core.Hashing` | `RollingHash` | $O(1)$ Adler-32 sliding-window checksum. Computes rolling hashes byte-by-byte to detect matching blocks even when byte offsets shift due to code insertions or deletions. |
+| `ZSync.Core.Transport` | `IByteRangeSource` | Unified interface for reading random byte ranges `[offset, offset + length - 1]`. |
+| `ZSync.Core.Transport` | `FileByteRangeSource` | Reads byte ranges from local paths, mounted shares, and Windows SMB / UNC shares (`\\server\share\...`) using `FileStream.Seek()`. Leaves unneeded gigabytes on the remote server. |
+| `ZSync.Core.Transport` | `HttpByteRangeSource` | Reads byte ranges over HTTP / HTTPS using standard HTTP `Range:` headers. |
+| `ZSync.Core.Transport` | `ByteRangeSourceFactory` | Automatically inspects URI / path scheme (`http://`, `https://`, `\\`, `file://`) and instantiates the correct source. |
+| `ZSync.Core.Model` | `BlockChecksum` | Holds block index, uncompressed offset/length, weak hash, xxHash64, and compressed offset/length in `.gz`. |
+| `ZSync.Core.Model` | `ZSyncControlFile` | Manages reading and writing `.zsync` control files with magic header `ZSYNC_NET_V1`. |
+| `ZSync.Core.Engine` | `ZSyncControlBuilder` | Generates uncompressed `.zsync`, block-compressed `.gz`, and `.gz.zsync` files **in a single streaming pass**, eliminating repeated disk reads. |
+| `ZSync.Core.Engine` | `ZSyncBlockMatcher` | Scans existing local files using sliding-window hash matching to build a reuse map. |
+| `ZSync.Core.Engine` | `ZSyncSyncEngine` | Assembles the target file: copies matched blocks locally, streams missing ranges over HTTP or SMB, decompresses on the fly if GZip mode is active, and verifies whole-file SHA256 and xxHash64. |
+
+---
+
+## Architectural Flow
+
+```
+[Target File: app-v1.0.1.zip]
+        │
+        ▼ (ZSyncControlBuilder.GenerateAllAsync - Single I/O Pass)
+ ┌──────────────────────┬──────────────────────┬──────────────────────┐
+ │                      │                      │                      │
+ ▼                      ▼                      ▼                      ▼
+app-v1.0.1.zip.zsync   app-v1.0.1.zip.gz      app-v1.0.1.zip.gz.zsync (Hashes & offsets)
+(Uncompressed control) (Block-compressed payload)
+
+──────────────────────────────────────────────────────────────────────────────────
+
+[Client Synchronization Flow]
+ 1. Read app-v1.0.1.zip.gz.zsync control file
+ 2. Scan local existing app-v1.0.0.zip with sliding-window RollingHash + FastXxHash64
+    ├── Block 0: MATCHED locally ──► Copy from local file
+    ├── Block 1: MATCHED locally ──► Copy from local file
+    ├── Block 2: MISSING ──────────► Fetch compressed range from HTTP / SMB share ──► Decompress on the fly
+    └── Block 3: MATCHED locally ──► Copy from local file
+ 3. Output app-v1.0.1.zip reconstructed in staging
+ 4. Verify SHA256 and xxHash64 against control file
 ```
 
 ---
