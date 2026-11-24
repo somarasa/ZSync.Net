@@ -1,0 +1,15 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Visual Studio / VS Code
+.vscode/
+.vs/
+
+## OS
+.DS_Store
+Thumbs.db

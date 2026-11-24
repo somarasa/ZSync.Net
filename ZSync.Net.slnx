@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ZSync.Cli/ZSync.Cli.csproj" />
+    <Project Path="src/ZSync.Core/ZSync.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ZSync.Tests/ZSync.Tests.csproj" />
+  </Folder>
+</Solution>
