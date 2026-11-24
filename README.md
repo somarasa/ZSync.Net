@@ -17,14 +17,19 @@ High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HD
 
 ## Installation
 
-### C# Library (NuGet)
+### Add as Submodule / Project Reference
 ```bash
-dotnet add package ZSync.Net
+git submodule add https://github.com/somarasa/ZSync.Net.git external/ZSync.Net
+```
+Reference in your `.csproj`:
+```xml
+<ProjectReference Include="../external/ZSync.Net/src/ZSync.Core/ZSync.Core.csproj" />
 ```
 
-### Global CLI Tool
+### Global CLI Tool (Build from Source)
 ```bash
-dotnet tool install --global ZSync.Net.Cli
+dotnet pack src/ZSync.Cli/ZSync.Cli.csproj -c Release -o ./artifacts
+dotnet tool install --global --add-source ./artifacts ZSync.Net.Cli
 ```
 Once installed, execute commands globally via `zsync` (or `dotnet zsync`):
 ```bash
