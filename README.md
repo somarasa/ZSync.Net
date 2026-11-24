@@ -9,6 +9,7 @@
 [![NuGet: ZSync.Net.Cli](https://img.shields.io/nuget/v/ZSync.Net.Cli.svg?logo=nuget&logoColor=white&label=Tool%3A%20ZSync.Net.Cli)](https://www.nuget.org/packages/ZSync.Net.Cli)
 [![Transports](https://img.shields.io/badge/transports-HTTP%20Range%20%7C%20SMB%20%7C%20UNC%20%7C%20File-blue.svg)]()
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20(Pure%20BCL)-brightgreen.svg)]()
+[![AI-Assisted](https://img.shields.io/badge/Ported%20with-AI%20Assistance-blueviolet.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HDiffPatch with xxHash64 and Multi-Transport SMB / HTTP Range Requests).
@@ -244,6 +245,9 @@ dotnet pack ZSync.Net.slnx -c Release -o ./artifacts
 - **[Hou Sisong (sisong/hdiffpatch)](https://github.com/sisong/hdiffpatch)**: Pioneered high-performance binary diffing algorithms and the block-compressed GZip sync format (`hsynz`).
 - **[Colin Phipps (zsync)](http://zsync.moria.org.uk/)**: Invented the original client-driven HTTP range partial download algorithm.
 - **[Yann Collet (xxHash)](https://github.com/Cyan4973/xxHash)**: Creator of the ultra-fast xxHash algorithm.
+
+### AI-Assisted Porting & Development
+This project was conceptualized, ported, and verified with the assistance of advanced AI pair-programming, translating and modernizing the core concepts from C/C++ [HDiffPatch/libhsync](https://github.com/sisong/hdiffpatch) and [zsync](http://zsync.moria.org.uk/) into high-performance, idiomatic, zero-dependency C# for modern .NET (8.0 LTS & 10.0).
 
 ---
 
