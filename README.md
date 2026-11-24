@@ -1,12 +1,9 @@
 # ZSync.Net
 
-[![CI & NuGet Pack](https://github.com/somarasa/ZSync.Net/actions/workflows/ci.yml/badge.svg)](https://github.com/somarasa/ZSync.Net/actions/workflows/ci.yml)
 [![Tests Passing](https://img.shields.io/badge/tests-passing%20(100%25)-brightgreen.svg?logo=github-actions&logoColor=white)](https://github.com/somarasa/ZSync.Net/actions)
 [![.NET 8.0 LTS](https://img.shields.io/badge/.NET-8.0%20LTS-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![.NET 10.0](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)]()
-[![NuGet: ZSync.Net](https://img.shields.io/nuget/v/ZSync.Net.svg?logo=nuget&logoColor=white&label=NuGet%3A%20ZSync.Net)](https://www.nuget.org/packages/ZSync.Net)
-[![NuGet: ZSync.Net.Cli](https://img.shields.io/nuget/v/ZSync.Net.Cli.svg?logo=nuget&logoColor=white&label=Tool%3A%20ZSync.Net.Cli)](https://www.nuget.org/packages/ZSync.Net.Cli)
 [![Transports](https://img.shields.io/badge/transports-HTTP%20Range%20%7C%20SMB%20%7C%20UNC%20%7C%20File-blue.svg)]()
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20(Pure%20BCL)-brightgreen.svg)]()
 [![AI-Assisted](https://img.shields.io/badge/Ported%20with-AI%20Assistance-blueviolet.svg)]()
