@@ -106,6 +106,8 @@ Quantum.Worker.dll.zsync       Quantum.Worker.dll.gz          Quantum.Worker.dll
  4. Verify SHA256 and xxHash64 against control file
 ```
 
+> **Note on File Types**: `ZSync.Net` operates on any file (regular binaries, service executables `.exe`, libraries `.dll`, database files `.db`, data files, or archives). A regular service binary (`Quantum.Worker.dll`) is used throughout the examples below.
+
 ---
 
 ## CLI Usage
