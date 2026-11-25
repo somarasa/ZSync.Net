@@ -22,16 +22,17 @@ namespace ZSync.Tests
             _tempDir = Path.Combine(Path.GetTempPath(), "hdiff_interop_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_tempDir);
 
-            // Locate native hsync_make and hsync_demo binaries built in reference/hsynz
+            // Locate native hsync_make and hsync_demo binaries in reference/hsynz
+            string exeExt = OperatingSystem.IsWindows() ? ".exe" : "";
             var dir = TestContext.CurrentContext.TestDirectory;
-            while (dir != null && !File.Exists(Path.Combine(dir, "reference/hsynz/hsync_make")))
+            while (dir != null && !File.Exists(Path.Combine(dir, "reference/hsynz", "hsync_make" + exeExt)))
             {
                 dir = Path.GetDirectoryName(dir);
             }
 
             var repoRoot = dir ?? Directory.GetCurrentDirectory();
-            _hsyncMakePath = Path.Combine(repoRoot, "reference/hsynz/hsync_make");
-            _hsyncDemoPath = Path.Combine(repoRoot, "reference/hsynz/hsync_demo");
+            _hsyncMakePath = Path.Combine(repoRoot, "reference/hsynz", "hsync_make" + exeExt);
+            _hsyncDemoPath = Path.Combine(repoRoot, "reference/hsynz", "hsync_demo" + exeExt);
 
             if (!File.Exists(_hsyncMakePath) || !File.Exists(_hsyncDemoPath))
             {

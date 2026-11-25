@@ -35,6 +35,24 @@ jobs:
       - name: Build Solution
         run: dotnet build ZSync.Net.slnx --configuration Release --no-restore
 
+      - name: Download HDiffPatch Reference Binaries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p reference/hsynz
+          curl -sL https://github.com/sisong/hsynz/releases/download/v1.3.0/hsynz_v1.3.0_bin_linux64.zip -o hsynz.zip
+          unzip -q -j hsynz.zip "linux64/*" -d reference/hsynz
+          chmod +x reference/hsynz/hsync_* reference/hsynz/hsign_*
+          rm hsynz.zip
+
+      - name: Download HDiffPatch Reference Binaries (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path reference/hsynz
+          Invoke-WebRequest -Uri https://github.com/sisong/hsynz/releases/download/v1.3.0/hsynz_v1.3.0_bin_windows64.zip -OutFile hsynz.zip
+          Expand-Archive -Path hsynz.zip -DestinationPath temp_hsynz -Force
+          Copy-Item -Path temp_hsynz/windows64/* -Destination reference/hsynz/ -Force
+          Remove-Item -Recurse -Force temp_hsynz, hsynz.zip
+
       - name: Run Test Suite
         run: dotnet test ZSync.Net.slnx --configuration Release --no-build --verbosity normal
 
