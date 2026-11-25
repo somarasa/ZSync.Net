@@ -1,6 +1,6 @@
 # ZSync.Net
 
-[![Tests Passing](https://img.shields.io/badge/tests-passing%20(100%25)-brightgreen.svg?logo=github-actions&logoColor=white)](https://github.com/somarasa/ZSync.Net/actions)
+[![Tests Passing](https://img.shields.io/badge/tests-41%20passing%20(100%25)-brightgreen.svg?logo=github-actions&logoColor=white)](https://github.com/somarasa/ZSync.Net/actions)
 [![.NET 8.0 LTS](https://img.shields.io/badge/.NET-8.0%20LTS-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![.NET 10.0](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)]()
@@ -62,10 +62,10 @@ zsync sync --control https://updates.example.com/Quantum.Worker.dll.hsyni --targ
    - **Reconstruction**: Rebuilds target files in a single write pass, concurrently verifying `HDiffPatchCheckChecksum`, SHA-256, and xxHash64 on the fly with zero second disk pass.
    - **Matcher**: Scans multi-gigabyte seed files using a sliding chunk buffer with constant ~1 MB memory usage.
 
-6. **Modern xxHash64 & Adler64 Fast Hashing**:
-   - 64-bit xxHash (`FastXxHash64`) for ultra-fast strong block identification and file checksums.
+6. **Universal Checksums & Fast Rolling Hashes**:
+   - First-class support for `xxh128` (XXH3 128-bit, native `hsync_make` default), `md5`, `sha256`, `sha512`, `crc32`, and `xxh64`.
    - 64-bit Adler rolling hash (`FastAdler64`) with 256-word table lookups for $O(1)$ block rolling.
-   - Pure MD5, MD4, and SHA-1 support for full standards compliance.
+   - Built-in MD5, MD4, and SHA-1 support for full standards compliance.
 
 7. **Atomic In-Place File Patching**:
    - Safely updates target files in-place: reconstructs into `.zsnew.<guid>`, verifies checksums on the fly, and atomically switches places (`File.Move(..., overwrite: true)`).
@@ -110,7 +110,7 @@ ZSync.Net/
 │   │       └── ZSyncSyncEngine.cs         # Single-pass atomic reconstructor & verifier
 │   └── ZSync.Cli/                         # Standalone CLI tool (make & sync commands)
 ├── tests/
-│   └── ZSync.Tests/                       # Comprehensive test suite (26/26 tests passing)
+│   └── ZSync.Tests/                       # Comprehensive test suite (41/41 tests passing across .NET 8.0 & 10.0)
 │       ├── FastXxHash64Tests.cs           # xxHash64 correctness & streaming state verification
 │       ├── RollingHashTests.cs            # Adler rolling update equivalence tests
 │       ├── TransportTests.cs              # SMB/File & HTTP Range transport tests

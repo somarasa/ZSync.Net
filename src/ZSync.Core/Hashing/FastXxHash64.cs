@@ -7,7 +7,7 @@ namespace ZSync.Core.Hashing
 {
     /// <summary>
     /// Pure C# implementation of 64-bit xxHash (xxHash64).
-    /// Extreme throughput (>10 GB/s on modern CPUs) with zero external dependencies.
+    /// Extreme throughput (>10 GB/s on modern CPUs) with high-efficiency streaming State.
     /// Supports one-shot span hashing and incremental streaming state.
     /// </summary>
     public static class FastXxHash64

@@ -13,13 +13,13 @@
     <Authors>somarasa</Authors>
     <Company>somarasa</Company>
     <Title>ZSync.Net</Title>
-    <Description>High-performance pure C# delta synchronization library. Modernizes zsync and HDiffPatch with xxHash64, multi-transport HTTP Range + Windows SMB/UNC file seeks, atomic in-place patching, and single-pass GZip generation. Zero external dependencies.</Description>
+    <Description>High-performance client-driven delta synchronization library for .NET. 100% interoperable with Hou Sisong's HDiffPatch (HSyni23/HSynz23) and Colin Phipps' zsync (0.6.2), featuring Zstandard streaming compression, universal checksums (xxh128, md5, sha256, sha512, crc32), multi-transport HTTP Range + Windows SMB/UNC seeks, and atomic in-place patching.</Description>
     <PackageProjectUrl>https://github.com/somarasa/ZSync.Net</PackageProjectUrl>
     <RepositoryUrl>https://github.com/somarasa/ZSync.Net.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageTags>zsync;hdiffpatch;delta;binary-diff;xxhash64;http-range;smb;unc;synchronization;in-place-update;zero-dependencies</PackageTags>
+    <PackageTags>zsync;hdiffpatch;delta;binary-diff;zstd;xxh128;xxhash64;http-range;smb;unc;synchronization;in-place-update</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Symbols & Source Link -->
