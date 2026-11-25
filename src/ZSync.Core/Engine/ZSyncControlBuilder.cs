@@ -67,14 +67,15 @@ namespace ZSync.Core.Engine
                 _ => string.Empty
             };
 
+            int checksumByteSize = ChecksumHelper.GetChecksumByteSize(options.ChecksumType);
             var control = new HSyniControlFile
             {
                 CompressType = normCompressType,
                 ChecksumType = options.ChecksumType,
                 BlockSize = options.BlockSize,
                 FileLength = inputStream.Length,
-                ChecksumByteSize = options.ChecksumType == "md5" ? 16 : 8,
-                SavedStrongChecksumBits = options.ChecksumType == "md5" ? 128 : 64,
+                ChecksumByteSize = checksumByteSize,
+                SavedStrongChecksumBits = checksumByteSize * 8,
                 SavedRollHashBits = 64
             };
 
@@ -111,31 +112,31 @@ namespace ZSync.Core.Engine
 
                 xxHashState.Update(blockSpan);
 
-                ulong weakHash = FastAdler64.Compute(blockSpan);
-                byte[] strongHashBytes;
-                if (options.ChecksumType == "md5")
+                ReadOnlySpan<byte> hashSpan = blockSpan;
+                byte[]? zeroPadded = null;
+                if (bytesRead < options.BlockSize)
                 {
-                    strongHashBytes = MD5.HashData(blockSpan);
+                    zeroPadded = new byte[options.BlockSize];
+                    blockSpan.CopyTo(zeroPadded);
+                    hashSpan = zeroPadded;
                 }
-                else if (options.ChecksumType == "sha256")
-                {
-                    strongHashBytes = SHA256.HashData(blockSpan);
-                }
-                else
-                {
-                    strongHashBytes = new byte[8];
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(strongHashBytes, FastXxHash64.Hash(blockSpan));
-                }
-                ulong strongHash = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(strongHashBytes.AsSpan(0, 8));
+
+                ulong weakHash = FastAdler64.Compute(hashSpan);
+                byte[] strongHashBytes = ChecksumHelper.ComputeStrongChecksum(options.ChecksumType, hashSpan);
+                ulong strongHash = strongHashBytes.Length >= 8
+                    ? System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(strongHashBytes)
+                    : (ulong)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(strongHashBytes);
 
                 checkChecksum.AppendBlock(blockIndex, strongHashBytes);
 
                 byte[]? compressedChunk = compressor?.Compress(blockSpan, options.CompressionLevel);
-                int chunkLen = compressedChunk != null ? compressedChunk.Length : bytesRead;
+                bool isCompressed = compressedChunk != null && compressedChunk.Length < bytesRead;
+                int savedSize = isCompressed ? compressedChunk!.Length : 0;
+                int payloadLen = isCompressed ? compressedChunk!.Length : bytesRead;
 
-                if (compressedChunk != null)
+                if (isCompressed)
                 {
-                    await outputHsynzStream.WriteAsync(compressedChunk, cancellationToken).ConfigureAwait(false);
+                    await outputHsynzStream.WriteAsync(compressedChunk!, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
@@ -150,14 +151,14 @@ namespace ZSync.Core.Engine
                     WeakHash = weakHash,
                     StrongHash = strongHash,
                     StrongHashBytes = strongHashBytes,
-                    IsCompressed = compressor != null,
+                    IsCompressed = isCompressed,
                     CompressedOffset = compressedOffset,
-                    CompressedLength = chunkLen
+                    CompressedLength = savedSize
                 });
 
                 blockIndex++;
                 uncompressedOffset += bytesRead;
-                compressedOffset += chunkLen;
+                compressedOffset += payloadLen;
             }
 
             // Compute whole file checksum

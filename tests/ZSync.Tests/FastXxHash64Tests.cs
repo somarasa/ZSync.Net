@@ -9,6 +9,35 @@ namespace ZSync.Tests
     public class FastXxHash64Tests
     {
         [Test]
+        public void Block0_CheckChecksum_MatchesNative()
+        {
+            byte[] block = new byte[2048];
+            using (var f = System.IO.File.OpenRead("/root/workspace/ZSync.Net/reference/hsynz/hsync_make"))
+            {
+                f.ReadExactly(block, 0, 2048);
+            }
+            byte[] strong = ChecksumHelper.ComputeStrongChecksum("xxh128", block);
+            Console.WriteLine("C# Block 0 strong: " + Convert.ToHexString(strong).ToLowerInvariant());
+
+            var cc = new HDiffPatchCheckChecksum("xxh128", 16);
+            cc.AppendBlock(0, strong);
+            byte[] res = cc.GetResult();
+            Console.WriteLine("C# Check checksum: " + Convert.ToHexString(res).ToLowerInvariant());
+
+            Assert.That(Convert.ToHexString(strong).ToLowerInvariant(), Is.EqualTo("f9b705f314218f2018f9d7329d6e7105"));
+            Assert.That(Convert.ToHexString(res).ToLowerInvariant(), Is.EqualTo("6fa6ebc3c94e759f522eb759a86e18af"));
+        }
+
+        [Test]
+        public void XxHash128_MatchesNative()
+        {
+            var bytes = Encoding.UTF8.GetBytes("The quick brown fox jumps over the lazy dog");
+            var h = ChecksumHelper.ComputeStrongChecksum("xxh128", bytes);
+            Console.WriteLine("C# xxh128: " + Convert.ToHexString(h).ToLowerInvariant());
+            Assert.That(Convert.ToHexString(h).ToLowerInvariant(), Is.EqualTo("51768a3a2ecca124fae7a35c2050d6dd"));
+        }
+
+        [Test]
         public void Hash_EmptyInput_ProducesValidHash()
         {
             var hash = FastXxHash64.Hash(ReadOnlySpan<byte>.Empty);

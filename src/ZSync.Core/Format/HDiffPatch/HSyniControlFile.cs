@@ -115,19 +115,23 @@ namespace ZSync.Core.Format.HDiffPatch
                 for (int i = 0; i < blockCount; i++)
                 {
                     uint diff = (uint)PackUInt.ReadUIntWithTag(ctrlMs, 1, out byte highTag);
+                    uint savedSize;
                     if (highTag == 0)
                     {
-                        backSize += diff;
+                        savedSize = backSize + diff;
+                        backSize = savedSize;
                     }
                     else if (diff > 0)
                     {
-                        backSize -= diff;
+                        savedSize = backSize - diff;
+                        backSize = savedSize;
                     }
                     else
                     {
+                        savedSize = 0;
                         backSize = (uint)control.BlockSize;
                     }
-                    savedSizes[i] = backSize;
+                    savedSizes[i] = savedSize;
                 }
             }
 
@@ -157,8 +161,9 @@ namespace ZSync.Core.Format.HDiffPatch
                 ulong weakHash = ReadRollHashBytes(rollHashBytes.AsSpan(i * rollBytes, rollBytes));
                 ulong strongHash = ReadStrongHashBytes(strongHashBytes.AsSpan(i * strongBytes, strongBytes));
 
-                int compressedLen = isSavedSizes != 0 ? (int)savedSizes[i] : uncompressedLen;
-                bool isCompressed = isSavedSizes != 0 && compressedLen > 0;
+                int savedSize = isSavedSizes != 0 ? (int)savedSizes[i] : uncompressedLen;
+                bool isCompressed = isSavedSizes != 0 && savedSize > 0;
+                int payloadLen = isCompressed ? savedSize : uncompressedLen;
 
                 control.Blocks.Add(new BlockChecksum
                 {
@@ -169,11 +174,11 @@ namespace ZSync.Core.Format.HDiffPatch
                     StrongHash = strongHash,
                     IsCompressed = isCompressed,
                     CompressedOffset = compressedOffset,
-                    CompressedLength = compressedLen
+                    CompressedLength = payloadLen
                 });
 
                 uncompressedOffset += uncompressedLen;
-                compressedOffset += compressedLen;
+                compressedOffset += payloadLen;
             }
 
             return control;
@@ -453,22 +458,7 @@ namespace ZSync.Core.Format.HDiffPatch
             foreach (var b in buffers)
                 ms.Write(b, 0, b.Length);
             byte[] all = ms.ToArray();
-
-            if (ChecksumType.StartsWith("md5", StringComparison.OrdinalIgnoreCase))
-            {
-                return MD5.HashData(all);
-            }
-            else if (ChecksumType.StartsWith("sha256", StringComparison.OrdinalIgnoreCase))
-            {
-                return SHA256.HashData(all);
-            }
-            else
-            {
-                byte[] result = new byte[ChecksumByteSize];
-                ulong hash = FastXxHash64.Hash(all);
-                BinaryPrimitives.WriteUInt64LittleEndian(result, hash);
-                return result;
-            }
+            return ChecksumHelper.ComputeStrongChecksum(ChecksumType, all);
         }
 
         private static IBlockCompressor GetCompressor(string type)

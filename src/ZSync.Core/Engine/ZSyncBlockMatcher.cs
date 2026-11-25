@@ -192,24 +192,8 @@ namespace ZSync.Core.Engine
 
         private static ulong ComputeStrongHash(string checksumType, ReadOnlySpan<byte> window, int savedStrongChecksumBits = 64)
         {
-            if (checksumType.StartsWith("md5", StringComparison.OrdinalIgnoreCase))
-            {
-                Span<byte> md5Buf = stackalloc byte[16];
-                MD5.HashData(window, md5Buf);
-                return ToPartChecksum(md5Buf, savedStrongChecksumBits);
-            }
-            else if (checksumType.StartsWith("md4", StringComparison.OrdinalIgnoreCase))
-            {
-                Span<byte> md4Buf = stackalloc byte[16];
-                Md4.Hash(window, md4Buf);
-                return ToPartChecksum(md4Buf, savedStrongChecksumBits);
-            }
-            else
-            {
-                Span<byte> xxBuf = stackalloc byte[8];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(xxBuf, FastXxHash64.Hash(window));
-                return ToPartChecksum(xxBuf, savedStrongChecksumBits);
-            }
+            byte[] strong = ChecksumHelper.ComputeStrongChecksum(checksumType, window);
+            return ToPartChecksum(strong, savedStrongChecksumBits);
         }
 
         private static ulong ToPartChecksum(ReadOnlySpan<byte> checksum, int outPartBits)

@@ -37,6 +37,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.IO.Hashing" Version="11.0.0" />
     <PackageReference Include="ZstdSharp.Port" Version="0.9.1" />
   </ItemGroup>
 

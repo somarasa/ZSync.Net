@@ -1,11 +1,11 @@
 using System;
 using System.Buffers.Binary;
-using System.Security.Cryptography;
 
 namespace ZSync.Core.Hashing
 {
     /// <summary>
     /// Computes the order-independent XOR-accumulated check checksum used in HDiffPatch HSyni/HSynz formats.
+    /// Compatible with all HDiffPatch strong checksum plugins (xxh128, md5, sha256, sha512, crc32, etc.).
     /// </summary>
     public sealed class HDiffPatchCheckChecksum
     {
@@ -16,8 +16,8 @@ namespace ZSync.Core.Hashing
         public HDiffPatchCheckChecksum(string checksumType, int byteSize)
         {
             _checksumType = checksumType;
-            _byteSize = byteSize;
-            _dXor = new byte[byteSize];
+            _byteSize = byteSize > 0 ? byteSize : ChecksumHelper.GetChecksumByteSize(checksumType);
+            _dXor = new byte[_byteSize];
             Array.Fill(_dXor, (byte)0xFF);
         }
 
@@ -31,22 +31,10 @@ namespace ZSync.Core.Hashing
 
             Span<byte> combined = stackalloc byte[12 + _byteSize];
             indexBuf.CopyTo(combined.Slice(0, 12));
-            blockChecksum.Slice(0, _byteSize).CopyTo(combined.Slice(12, _byteSize));
+            blockChecksum.Slice(0, Math.Min(_byteSize, blockChecksum.Length)).CopyTo(combined.Slice(12, _byteSize));
 
             Span<byte> hashed = stackalloc byte[_byteSize];
-            if (_checksumType.StartsWith("md5", StringComparison.OrdinalIgnoreCase))
-            {
-                MD5.HashData(combined, hashed);
-            }
-            else if (_checksumType.StartsWith("sha256", StringComparison.OrdinalIgnoreCase))
-            {
-                SHA256.HashData(combined, hashed);
-            }
-            else
-            {
-                ulong h = FastXxHash64.Hash(combined);
-                BinaryPrimitives.WriteUInt64LittleEndian(hashed, h);
-            }
+            ChecksumHelper.ComputeStrongChecksum(_checksumType, combined, hashed);
 
             for (int j = 0; j < _byteSize; j++)
             {

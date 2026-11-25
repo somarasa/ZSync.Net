@@ -155,8 +155,12 @@ namespace ZSync.Core.Engine
                             }
                             else
                             {
+                                long sourceOffset = control.Format == ControlFileFormat.HDiffPatch
+                                    ? block.CompressedOffset
+                                    : block.UncompressedOffset;
+
                                 blockData = await rangeSource.ReadRangeAsync(
-                                    block.UncompressedOffset,
+                                    sourceOffset,
                                     block.UncompressedLength,
                                     cancellationToken).ConfigureAwait(false);
 
@@ -164,6 +168,8 @@ namespace ZSync.Core.Engine
                                 await destStream.WriteAsync(blockData.AsMemory(), cancellationToken).ConfigureAwait(false);
                             }
                         }
+
+
 
                         // Feed streaming hashes
                         xxHashState.Update(blockData);
@@ -173,18 +179,15 @@ namespace ZSync.Core.Engine
                         if (checkChecksum != null)
                         {
                             byte[] blockStrong;
-                            if (control.ChecksumType.StartsWith("md5", StringComparison.OrdinalIgnoreCase))
+                            if (blockData.Length < control.BlockSize)
                             {
-                                blockStrong = MD5.HashData(blockData);
-                            }
-                            else if (control.ChecksumType.StartsWith("sha256", StringComparison.OrdinalIgnoreCase))
-                            {
-                                blockStrong = SHA256.HashData(blockData);
+                                byte[] padded = new byte[control.BlockSize];
+                                blockData.CopyTo(padded, 0);
+                                blockStrong = ChecksumHelper.ComputeStrongChecksum(control.ChecksumType, padded);
                             }
                             else
                             {
-                                blockStrong = new byte[8];
-                                BinaryPrimitives.WriteUInt64LittleEndian(blockStrong, FastXxHash64.Hash(blockData));
+                                blockStrong = ChecksumHelper.ComputeStrongChecksum(control.ChecksumType, blockData);
                             }
                             checkChecksum.AppendBlock(block.BlockIndex, blockStrong);
                         }

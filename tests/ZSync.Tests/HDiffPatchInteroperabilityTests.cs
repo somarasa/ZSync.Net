@@ -96,6 +96,42 @@ namespace ZSync.Tests
             Assert.That(reconstructedBytes, Is.EqualTo(newData));
         }
 
+        [TestCase("zstd")]
+        [TestCase("none")]
+        public async Task Interop_HDiffPatchMake_AllCompressions_To_ZSyncNetSync(string compressType)
+        {
+            int size = 16384;
+            var newData = new byte[size];
+            for (int i = 0; i < size; i++) newData[i] = (byte)((i * 41) ^ (i % 13));
+
+            var oldData = (byte[])newData.Clone();
+            for (int i = 2048; i < 6144; i++) oldData[i] ^= 0x33;
+
+            var newFile = Path.Combine(_tempDir, $"new_comp_{compressType}.bin");
+            var oldFile = Path.Combine(_tempDir, $"old_comp_{compressType}.bin");
+            var hsyniFile = Path.Combine(_tempDir, $"new_comp_{compressType}.bin.hsyni");
+            var hsynzFile = Path.Combine(_tempDir, $"new_comp_{compressType}.bin.hsynz");
+            var reconstructedFile = Path.Combine(_tempDir, $"reconstructed_comp_{compressType}.bin");
+
+            await File.WriteAllBytesAsync(newFile, newData);
+            await File.WriteAllBytesAsync(oldFile, oldData);
+
+            string compArg = compressType == "none" ? "" : $"-c-{compressType}";
+            RunProcess(_hsyncMakePath, $"-s-2048 {compArg} -f \"{newFile}\" \"{hsyniFile}\" \"{hsynzFile}\"");
+
+            var control = await ZSyncControlFile.LoadAsync(hsyniFile);
+            string payloadPath = File.Exists(hsynzFile) ? hsynzFile : newFile;
+            using var rangeSource = new FileByteRangeSource(payloadPath);
+            var result = await ZSyncSyncEngine.SyncAsync(
+                control: control,
+                rangeSource: rangeSource,
+                destinationPath: reconstructedFile,
+                localSourcePath: oldFile);
+
+            var reconstructedBytes = await File.ReadAllBytesAsync(reconstructedFile);
+            Assert.That(reconstructedBytes, Is.EqualTo(newData));
+        }
+
         [Test]
         public async Task Interop_HDiffPatchMake_ZSyncMode_To_ZSyncNetSync()
         {
@@ -209,6 +245,107 @@ namespace ZSync.Tests
             Assert.That(File.Exists(patchedFile), Is.True);
             var patchedBytes = await File.ReadAllBytesAsync(patchedFile);
             Assert.That(patchedBytes, Is.EqualTo(targetData));
+        }
+
+        [TestCase("xxh128")]
+        [TestCase("md5")]
+        [TestCase("sha256")]
+        [TestCase("sha512")]
+        [TestCase("crc32")]
+        public async Task Interop_HDiffPatchMake_AllChecksums_To_ZSyncNetSync(string checksumType)
+        {
+            int size = 16384;
+            var newData = new byte[size];
+            for (int i = 0; i < size; i++) newData[i] = (byte)((i * 37) ^ (i % 11));
+
+            var oldData = (byte[])newData.Clone();
+            for (int i = 4096; i < 8192; i++) oldData[i] ^= 0xAA;
+
+            var newFile = Path.Combine(_tempDir, $"new_{checksumType}.bin");
+            var oldFile = Path.Combine(_tempDir, $"old_{checksumType}.bin");
+            var hsyniFile = Path.Combine(_tempDir, $"new_{checksumType}.bin.hsyni");
+            var hsynzFile = Path.Combine(_tempDir, $"new_{checksumType}.bin.hsynz");
+            var reconstructedFile = Path.Combine(_tempDir, $"reconstructed_{checksumType}.bin");
+
+            await File.WriteAllBytesAsync(newFile, newData);
+            await File.WriteAllBytesAsync(oldFile, oldData);
+
+            RunProcess(_hsyncMakePath, $"-s-2048 -c-zstd -C-{checksumType} -f \"{newFile}\" \"{hsyniFile}\" \"{hsynzFile}\"");
+
+            var control = await ZSyncControlFile.LoadAsync(hsyniFile);
+            using var rangeSource = new FileByteRangeSource(hsynzFile);
+            var result = await ZSyncSyncEngine.SyncAsync(
+                control: control,
+                rangeSource: rangeSource,
+                destinationPath: reconstructedFile,
+                localSourcePath: oldFile);
+
+            var reconstructedBytes = await File.ReadAllBytesAsync(reconstructedFile);
+            Assert.That(reconstructedBytes, Is.EqualTo(newData));
+        }
+
+        [TestCase("xxh128")]
+        [TestCase("md5")]
+        [TestCase("sha256")]
+        [TestCase("sha512")]
+        [TestCase("crc32")]
+        public async Task Interop_ZSyncNetMake_AllChecksums_To_HDiffPatchDemo(string checksumType)
+        {
+            int size = 16384;
+            var targetData = new byte[size];
+            for (int i = 0; i < size; i++) targetData[i] = (byte)((i * 29) ^ 0x4B);
+
+            var oldData = (byte[])targetData.Clone();
+            for (int i = 2048; i < 4096; i++) oldData[i] ^= 0x77;
+
+            var targetFile = Path.Combine(_tempDir, $"target_{checksumType}.bin");
+            var oldFile = Path.Combine(_tempDir, $"old_{checksumType}.bin");
+            var patchedFile = Path.Combine(_tempDir, $"patched_{checksumType}_demo.bin");
+
+            await File.WriteAllBytesAsync(targetFile, targetData);
+            await File.WriteAllBytesAsync(oldFile, oldData);
+
+            var summary = await ZSyncControlBuilder.GenerateAllAsync(
+                targetFile,
+                _tempDir,
+                new ZSyncControlBuilderOptions
+                {
+                    BlockSize = 2048,
+                    CompressType = "zstd",
+                    ChecksumType = checksumType
+                });
+
+            RunProcess(_hsyncDemoPath, $"-f \"{oldFile}\" \"{summary.ControlPath}\" \"{summary.PayloadPath}\" \"{patchedFile}\"");
+
+            var patchedBytes = await File.ReadAllBytesAsync(patchedFile);
+            Assert.That(patchedBytes, Is.EqualTo(targetData));
+        }
+
+        [Test]
+        public async Task Interop_NativeBinary_SelfSync_WithDefaultSettings()
+        {
+            var targetFile = _hsyncMakePath;
+            var targetBytes = await File.ReadAllBytesAsync(targetFile);
+
+            var hsyniFile = Path.Combine(_tempDir, "native_make.hsyni");
+            var hsynzFile = Path.Combine(_tempDir, "native_make.hsynz");
+            var reconstructedFile = Path.Combine(_tempDir, "native_reconstructed");
+
+            // Run native hsync_make with DEFAULT checksum (-C-xxh128) and zstd compression
+            RunProcess(_hsyncMakePath, $"-c-zstd -f \"{targetFile}\" \"{hsyniFile}\" \"{hsynzFile}\"");
+
+            var control = await ZSyncControlFile.LoadAsync(hsyniFile);
+            Assert.That(control.ChecksumType, Is.EqualTo("xxh128"));
+
+            using var rangeSource = new FileByteRangeSource(hsynzFile);
+            await ZSyncSyncEngine.SyncAsync(
+                control: control,
+                rangeSource: rangeSource,
+                destinationPath: reconstructedFile,
+                localSourcePath: null);
+
+            var reconstructedBytes = await File.ReadAllBytesAsync(reconstructedFile);
+            Assert.That(reconstructedBytes, Is.EqualTo(targetBytes));
         }
 
         private static void RunProcess(string binaryPath, string arguments)
