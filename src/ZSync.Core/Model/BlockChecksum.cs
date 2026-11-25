@@ -4,15 +4,15 @@ namespace ZSync.Core.Model
 {
     public sealed class BlockChecksum
     {
-        public int BlockIndex { get; init; }
-        public long UncompressedOffset { get; init; }
-        public int UncompressedLength { get; init; }
-        public uint WeakHash { get; init; }
-        public ulong StrongHash { get; init; } // FastXxHash64
+        public int BlockIndex { get; set; }
+        public long UncompressedOffset { get; set; }
+        public int UncompressedLength { get; set; }
+        public ulong WeakHash { get; set; }
+        public ulong StrongHash { get; set; }
+        public byte[]? StrongHashBytes { get; set; }
 
-        // GZip compressed block metadata (HDiffPatch/zsync gzip feature)
-        public bool IsCompressed { get; init; }
-        public long CompressedOffset { get; init; }
-        public int CompressedLength { get; init; }
+        public bool IsCompressed { get; set; }
+        public long CompressedOffset { get; set; }
+        public int CompressedLength { get; set; }
     }
 }

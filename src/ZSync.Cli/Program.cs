@@ -31,7 +31,7 @@ namespace ZSync.Cli
 
                     case "--version":
                     case "-v":
-                        Console.WriteLine("ZSync.Net v1.0.0 (High-performance xxHash64 + GZip Delta Sync)");
+                        Console.WriteLine("ZSync.Net v1.0.0 (HDiffPatch & ZSync interoperable delta sync with Zstandard / xxHash64)");
                         return 0;
 
                     default:
@@ -54,7 +54,8 @@ namespace ZSync.Cli
             string? inputFile = null;
             string? outDir = null;
             int blockSize = 4096;
-            bool generateAll = true;
+            string compressType = "zstd";
+            string checksumType = "xxh64";
 
             for (int i = 1; i < args.Length; i++)
             {
@@ -71,9 +72,13 @@ namespace ZSync.Cli
                 {
                     int.TryParse(args[++i], out blockSize);
                 }
-                else if (a.Equals("--no-gzip", StringComparison.OrdinalIgnoreCase))
+                else if (a.Equals("--compress", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
-                    generateAll = false;
+                    compressType = args[++i];
+                }
+                else if (a.Equals("--checksum", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    checksumType = args[++i];
                 }
                 else if (!a.StartsWith("-") && inputFile == null)
                 {
@@ -84,41 +89,26 @@ namespace ZSync.Cli
             if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             {
                 Console.WriteLine("Error: Valid input file is required.");
-                Console.WriteLine("Usage: dotnet ZSync.Cli.dll make <input-file> [--block-size 4096] [--out-dir <dir>]");
+                Console.WriteLine("Usage: zsync make <input-file> [--block-size 4096] [--compress zstd|zlib] [--out-dir <dir>]");
                 return 1;
             }
 
-            Console.WriteLine($"[ZSync] Processing '{inputFile}' (Block size: {blockSize} bytes)...");
+            Console.WriteLine($"[ZSync] Processing '{inputFile}' (Block size: {blockSize} bytes, Compress: {compressType})...");
 
             var options = new ZSyncControlBuilderOptions
             {
-                BlockSize = blockSize
+                BlockSize = blockSize,
+                CompressType = compressType,
+                ChecksumType = checksumType
             };
 
-            if (generateAll)
-            {
-                Console.WriteLine("[ZSync] Generating uncompressed .zsync, compressed .gz payload, and .gz.zsync at once (single-pass I/O)...");
-                var summary = await ZSyncControlBuilder.GenerateAllAsync(inputFile, outDir, options).ConfigureAwait(false);
+            var summary = await ZSyncControlBuilder.GenerateAllAsync(inputFile, outDir, options).ConfigureAwait(false);
 
-                Console.WriteLine("\n[ZSync] Generation completed successfully:");
-                Console.WriteLine($"  Uncompressed Control: {summary.UncompressedControlPath}");
-                Console.WriteLine($"  GZip Payload:         {summary.GzipPayloadPath} ({summary.GzipSize / 1024.0 / 1024.0:F2} MB, {summary.CompressionRatio:F1}% of original)");
-                Console.WriteLine($"  GZip Control:         {summary.GzipControlPath}");
-                Console.WriteLine($"  Total Blocks:         {summary.BlockCount:N0}");
-                Console.WriteLine($"  SHA256:               {summary.Sha256}");
-                Console.WriteLine($"  xxHash64:             0x{summary.XxHash64:X16}");
-            }
-            else
-            {
-                var controlPath = Path.Combine(outDir ?? Path.GetDirectoryName(inputFile)!, Path.GetFileName(inputFile) + ".zsync");
-                var control = await ZSyncControlBuilder.BuildAsync(inputFile, controlPath, null, options).ConfigureAwait(false);
-
-                Console.WriteLine("\n[ZSync] Generation completed successfully:");
-                Console.WriteLine($"  Control File: {controlPath}");
-                Console.WriteLine($"  Total Blocks: {control.Blocks.Count:N0}");
-                Console.WriteLine($"  SHA256:       {control.Sha256}");
-                Console.WriteLine($"  xxHash64:     0x{control.XxHash64:X16}");
-            }
+            Console.WriteLine("\n[ZSync] Generation completed successfully:");
+            Console.WriteLine($"  Control File (.hsyni): {summary.ControlPath}");
+            Console.WriteLine($"  Payload File (.hsynz): {summary.PayloadPath} ({summary.CompressedSize / 1024.0 / 1024.0:F2} MB, {summary.CompressionRatio:F1}% of original)");
+            Console.WriteLine($"  Total Blocks:          {summary.BlockCount:N0}");
+            Console.WriteLine($"  xxHash64:              0x{summary.XxHash64:X16}");
 
             return 0;
         }
@@ -153,89 +143,80 @@ namespace ZSync.Cli
 
             if (string.IsNullOrWhiteSpace(controlPathOrUrl))
             {
-                Console.WriteLine("Error: --control <file.zsync|url> is required.");
-                Console.WriteLine("Usage: dotnet ZSync.Cli.dll sync --control <app.zsync> [--source <old-app.zip>] [--target <new-app.zip>] [--payload <url|smb|path>]");
+                Console.WriteLine("Error: --control <file.hsyni|file.zsync|url> is required.");
+                Console.WriteLine("Usage: zsync sync --control <file.hsyni> [--source <old-file>] [--target <new-file>] [--payload <url|path>]");
                 return 1;
             }
 
-            // Load control file
+            Console.WriteLine($"[ZSync] Loading control file from '{controlPathOrUrl}'...");
+
             ZSyncControlFile control;
             if (controlPathOrUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 controlPathOrUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
-                using var http = new System.Net.Http.HttpClient();
-                var stream = await http.GetStreamAsync(controlPathOrUrl).ConfigureAwait(false);
-                control = await ZSyncControlFile.LoadAsync(stream).ConfigureAwait(false);
+                using var httpSource = new HttpByteRangeSource(controlPathOrUrl);
+                using var ms = new MemoryStream();
+                using var client = new System.Net.Http.HttpClient();
+                using var stream = await client.GetStreamAsync(controlPathOrUrl).ConfigureAwait(false);
+                await stream.CopyToAsync(ms).ConfigureAwait(false);
+                ms.Position = 0;
+                control = await ZSyncControlFile.LoadAsync(ms).ConfigureAwait(false);
             }
             else
             {
                 control = await ZSyncControlFile.LoadAsync(controlPathOrUrl).ConfigureAwait(false);
             }
 
-            targetDestination ??= control.FileName;
-            payloadSource ??= control.PayloadUrl ?? Path.ChangeExtension(controlPathOrUrl, null);
+            targetDestination ??= Path.Combine(Directory.GetCurrentDirectory(), control.FileName);
+            payloadSource ??= control.PayloadUrl ?? (Path.ChangeExtension(controlPathOrUrl, ".hsynz"));
 
-            if (string.IsNullOrWhiteSpace(payloadSource))
+            Console.WriteLine($"[ZSync] Target file:   {targetDestination}");
+            Console.WriteLine($"[ZSync] Total size:    {control.FileLength / 1024.0 / 1024.0:F2} MB ({control.Blocks.Count:N0} blocks)");
+            Console.WriteLine($"[ZSync] Payload from:  {payloadSource}");
+            if (!string.IsNullOrEmpty(localSourceFile))
             {
-                Console.WriteLine("Error: Payload source could not be determined. Please specify --payload <url|path>.");
-                return 1;
+                Console.WriteLine($"[ZSync] Local seed:    {localSourceFile}");
             }
-
-            if (string.IsNullOrWhiteSpace(localSourceFile) && File.Exists(targetDestination))
-            {
-                localSourceFile = targetDestination;
-                Console.WriteLine($"[ZSync] In-place patch mode enabled: updating '{targetDestination}' atomically.");
-            }
-
-            Console.WriteLine($"[ZSync] Target file: '{targetDestination}' ({control.FileLength / 1024.0 / 1024.0:F2} MB, {control.Blocks.Count:N0} blocks)");
-            if (!string.IsNullOrWhiteSpace(localSourceFile))
-            {
-                Console.WriteLine($"[ZSync] Local source: '{localSourceFile}'");
-            }
-            Console.WriteLine($"[ZSync] Remote payload: '{payloadSource}' (Compressed: {control.IsGzipCompressed})");
 
             using var rangeSource = ByteRangeSourceFactory.Create(payloadSource);
 
-            var lastReport = -1;
-            var progress = new Progress<double>(pct =>
+            var progress = new Progress<ZSyncProgressReport>(report =>
             {
-                int current = (int)pct;
-                if (current != lastReport && current % 10 == 0)
-                {
-                    lastReport = current;
-                    Console.Write($"\r[ZSync] Progress: {current}% complete... ");
-                }
+                Console.Write($"\r[ZSync] Progress: {report.Percentage:F1}% ({report.ProcessedBlocks:N0}/{report.TotalBlocks:N0} blocks) | Reused: {report.LocalReusedBytes / 1024.0 / 1024.0:F2} MB | Downloaded: {report.DownloadedBytes / 1024.0 / 1024.0:F2} MB");
             });
 
+            Console.WriteLine("\n[ZSync] Starting synchronization...");
             var result = await ZSyncSyncEngine.SyncAsync(
                 control,
                 rangeSource,
-                localSourceFile,
                 targetDestination,
+                localSourceFile,
                 progress).ConfigureAwait(false);
 
-            Console.WriteLine("\n[ZSync] Sync finished successfully!");
-            Console.WriteLine($"  Total Size:       {result.TotalBytes / 1024.0 / 1024.0:F2} MB");
-            Console.WriteLine($"  Reused Locally:   {result.LocalReusedBytes / 1024.0 / 1024.0:F2} MB ({result.BandwidthSavingsPercentage:F1}% bandwidth saved)");
-            Console.WriteLine($"  Downloaded:       {result.DownloadedBytes / 1024.0 / 1024.0:F2} MB");
-            Console.WriteLine($"  Checksum Valid:   {result.ChecksumVerified}");
+            Console.WriteLine("\n\n[ZSync] Sync finished successfully!");
+            Console.WriteLine($"  Reconstructed File:  {result.TargetPath}");
+            Console.WriteLine($"  Total Size:          {result.TotalBytes / 1024.0 / 1024.0:F2} MB");
+            Console.WriteLine($"  Locally Reused:      {result.LocalReusedBytes / 1024.0 / 1024.0:F2} MB ({result.BandwidthSavedRatio:F1}% bandwidth saved)");
+            Console.WriteLine($"  Network Downloaded:  {result.DownloadedBytes / 1024.0 / 1024.0:F2} MB");
+            Console.WriteLine($"  SHA256:              {result.Sha256}");
+            Console.WriteLine($"  xxHash64:            0x{result.XxHash64:X16}");
 
-            return result.ChecksumVerified ? 0 : 1;
+            return 0;
         }
 
         private static void PrintHelp()
         {
-            Console.WriteLine("ZSync.Net — High-Performance xxHash64 & GZip Delta Synchronization CLI");
-            Console.WriteLine("Supports HTTP/HTTPS Range Requests and Windows SMB / UNC File Shares\n");
-            Console.WriteLine("Commands:");
-            Console.WriteLine("  make <input-file>       Generates .zsync, .gz, and .gz.zsync files at once");
-            Console.WriteLine("    --block-size <bytes>  Block size for chunking (default: 4096)");
-            Console.WriteLine("    --out-dir <path>      Output directory for generated files");
-            Console.WriteLine("    --no-gzip             Only generate uncompressed .zsync file\n");
-            Console.WriteLine("  sync --control <file>   Syncs target file from remote/SMB using local cache");
-            Console.WriteLine("    --source <old-file>   Existing local file to reuse matching blocks from");
-            Console.WriteLine("    --target <dest-file>  Destination path to reconstruct target file");
-            Console.WriteLine("    --payload <url|smb>   URL or SMB path (\\\\server\\share\\...) to payload file");
+            Console.WriteLine("ZSync.Net — High-Performance HDiffPatch & ZSync Delta Synchronization Tool\n");
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  zsync make <file> [options]");
+            Console.WriteLine("      --block-size <bytes>   Block size in bytes (default: 4096)");
+            Console.WriteLine("      --compress <type>      Compression type: zstd, zlib (default: zstd)");
+            Console.WriteLine("      --out-dir <directory>  Output destination directory");
+            Console.WriteLine();
+            Console.WriteLine("  zsync sync --control <file.hsyni|file.zsync|url> [options]");
+            Console.WriteLine("      --target <file>        Target destination output file");
+            Console.WriteLine("      --source <file>        Local seed file to scan for identical chunks");
+            Console.WriteLine("      --payload <url|path>   Source payload (.hsynz) location (HTTP Range or SMB/File)");
         }
     }
 }

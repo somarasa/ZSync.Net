@@ -54,5 +54,51 @@ namespace ZSync.Tests
             Assert.That(sub1, Is.EqualTo(sub2));
             Assert.That(sub1, Is.Not.EqualTo(fullHash));
         }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(7)]
+        [TestCase(31)]
+        [TestCase(32)]
+        [TestCase(33)]
+        [TestCase(64)]
+        [TestCase(100)]
+        [TestCase(1024)]
+        [TestCase(70000)]
+        public void State_MatchesDirectHash_AcrossArbitraryChunkSizes(int totalSize)
+        {
+            var data = new byte[totalSize];
+            new Random(12345).NextBytes(data);
+            ulong expected = FastXxHash64.Hash(data);
+
+            // Test various slice step sizes (e.g. 1 byte, 17 bytes, 32 bytes, 1024 bytes)
+            int[] chunkSizes = { 1, 7, 16, 31, 32, 63, 1024, 65536 };
+            foreach (var chunkSize in chunkSizes)
+            {
+                var state = new FastXxHash64.State();
+                int offset = 0;
+                while (offset < data.Length)
+                {
+                    int take = Math.Min(chunkSize, data.Length - offset);
+                    state.Update(data.AsSpan(offset, take));
+                    offset += take;
+                }
+                ulong actual = state.Digest();
+                Assert.That(actual, Is.EqualTo(expected), $"Failed with chunkSize {chunkSize} on totalSize {totalSize}");
+            }
+        }
+
+        [Test]
+        public async System.Threading.Tasks.Task HashStreamAsync_MatchesDirectHash()
+        {
+            var data = new byte[128 * 1024];
+            new Random(999).NextBytes(data);
+            ulong expected = FastXxHash64.Hash(data);
+
+            using var ms = new System.IO.MemoryStream(data);
+            ulong actual = await FastXxHash64.HashStreamAsync(ms);
+
+            Assert.That(actual, Is.EqualTo(expected));
+        }
     }
 }

@@ -5,13 +5,12 @@
 [![.NET 10.0](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)]()
 [![Transports](https://img.shields.io/badge/transports-HTTP%20Range%20%7C%20SMB%20%7C%20UNC%20%7C%20File-blue.svg)]()
-[![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20(Pure%20BCL)-brightgreen.svg)]()
-[![AI-Assisted](https://img.shields.io/badge/Ported%20with-AI%20Assistance-blueviolet.svg)]()
+[![Format Interop](https://img.shields.io/badge/format%20interop-HDiffPatch%20%7C%20ZSync%200.6.2-brightgreen.svg)]()
+[![Compression](https://img.shields.io/badge/compression-Zstandard%20%7C%20Zlib-blue.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-High-Performance C# Delta Synchronization Library and CLI (Modernized Zsync + HDiffPatch with xxHash64 and Multi-Transport SMB / HTTP Range Requests).
-
-**Zero external NuGet dependencies** — 100% pure .NET.
+High-Performance C# Delta Synchronization Library and CLI for .NET.
+**100% Interoperable** with Hou Sisong's [HDiffPatch](https://github.com/sisong/hdiffpatch) (`HSyni23` / `.hsyni` and `HSynz23` / `.hsynz`) and Colin Phipps' [zsync](http://zsync.moria.org.uk/) (`0.6.2`), featuring Zstandard streaming compression, xxHash64, and multi-transport SMB / HTTP Range requests.
 
 ---
 
@@ -31,38 +30,46 @@ Reference in your `.csproj`:
 dotnet pack src/ZSync.Cli/ZSync.Cli.csproj -c Release -o ./artifacts
 dotnet tool install --global --add-source ./artifacts ZSync.Net.Cli
 ```
-Once installed, execute commands globally via `zsync` (or `dotnet zsync`):
+Once installed, execute commands globally via `zsync`:
 ```bash
-zsync make Quantum.Worker.dll
-zsync sync --control https://updates.example.com/Quantum.Worker.dll.gz.zsync --target Quantum.Worker.dll
+zsync make Quantum.Worker.dll --compress zstd
+zsync sync --control https://updates.example.com/Quantum.Worker.dll.hsyni --target Quantum.Worker.dll
 ```
 
 ---
 
 ## Key Features
 
-1. **Client-Driven Delta Sync (Zero Server Compute)**:
-   - Does not require a server-side daemon or active compute process.
-   - Works over any standard HTTP/HTTPS web server (Nginx, Apache, GitLab Generic Packages, S3, MinIO, CDN) using standard RFC 7233 `Range: bytes=start-end` requests.
+1. **100% Two-Way Standards Interoperability**:
+   - Seamlessly generates and consumes HDiffPatch control files (`.hsyni`) and payloads (`.hsynz`).
+   - Seamlessly synchronizes against legacy Colin Phipps' `zsync` (`0.6.2`) control files (`.zsync`).
+   - Verified two-way against compiled native `hsync_make` and `hsync_demo` (v1.3.0).
 
-2. **Native SMB / UNC & Local File Share Support**:
+2. **First-Class Zstandard & Zlib Support**:
+   - Ultra-fast Zstandard block compression (`zstdD`) with sliding prefix dictionary lookback and magicless streaming frames.
+   - Raw Deflate / Zlib (`zlibD`) streaming compression.
+
+3. **Client-Driven Delta Sync (Zero Server Compute)**:
+   - Does not require a server-side daemon or active compute process.
+   - Works over any standard HTTP/HTTPS web server (Nginx, Apache, GitLab Generic Packages, S3, MinIO, CDN) using RFC 7233 `Range: bytes=start-end` requests.
+
+4. **Native SMB / UNC & Local File Share Support**:
    - Random-access streaming over Windows SMB file shares (`\\server\share\...`) and local files (`file://`).
    - Translates to native SMB `READ` requests at specific offsets: **the multi-gigabyte payload stays on the share; only the missing chunks travel across the network wire**.
 
-3. **Modern xxHash64 (RAM Speed Hashing)**:
-   - Replaces slow legacy MD4/MD5 hashes with **xxHash64** (>10 GB/s on modern CPUs) for collision-resistant block verification.
-   - Combined with an $O(1)$ sliding-window Adler-32 rolling hash for fast offset-shifted block discovery.
+5. **True Single-Pass Streaming I/O & Constant RAM Footprint**:
+   - **Generation**: Creates `.hsyni` and `.hsynz` in a single pass using streaming `FastXxHash64.State` with zero file buffering.
+   - **Reconstruction**: Rebuilds target files in a single write pass, concurrently verifying `HDiffPatchCheckChecksum`, SHA-256, and xxHash64 on the fly with zero second disk pass.
+   - **Matcher**: Scans multi-gigabyte seed files using a sliding chunk buffer with constant ~1 MB memory usage.
 
-4. **HDiffPatch Single-Pass GZip Generation (Minimized I/O)**:
-   - Generates the uncompressed control file (`.zsync`), the block-compressed GZip payload (`.gz`), and the compressed control file (`.gz.zsync`) in a **single streaming pass over the input file**, cutting disk I/O to the absolute minimum.
+6. **Modern xxHash64 & Adler64 Fast Hashing**:
+   - 64-bit xxHash (`FastXxHash64`) for ultra-fast strong block identification and file checksums.
+   - 64-bit Adler rolling hash (`FastAdler64`) with 256-word table lookups for $O(1)$ block rolling.
+   - Pure MD5, MD4, and SHA-1 support for full standards compliance.
 
-5. **Doubly Optimized Bandwidth**:
-   - Only missing blocks are downloaded.
-   - When using the `.gz` payload, those missing blocks are downloaded in GZip-compressed format and decompressed on the fly into the target destination.
-
-6. **Atomic In-Place File Patching**:
-   - When updating an existing file in-place, `ZSync.Net` reads existing blocks from the target file, constructs the new build in a temporary sibling (`.zsnew.<id>`), verifies the whole-file checksum, and atomically switches places (`File.Move(..., overwrite: true)`).
-   - Leftovers are automatically removed on success. If verification fails, the original active file is completely untouched.
+7. **Atomic In-Place File Patching**:
+   - Safely updates target files in-place: reconstructs into `.zsnew.<guid>`, verifies checksums on the fly, and atomically switches places (`File.Move(..., overwrite: true)`).
+   - Zero leftover files on success; destination remains completely intact if interrupted.
 
 ---
 
@@ -72,49 +79,47 @@ zsync sync --control https://updates.example.com/Quantum.Worker.dll.gz.zsync --t
 ZSync.Net/
 ├── src/
 │   ├── ZSync.Core/
+│   │   ├── Compression/
+│   │   │   ├── IBlockCompressor.cs        # Block compressor interface (with dictionary lookback)
+│   │   │   ├── ZstdBlockCompressor.cs     # Zstandard streaming magicless compressor / decompressor
+│   │   │   └── DeflateBlockCompressor.cs  # Raw Deflate / Zlib compressor / decompressor
+│   │   ├── Format/
+│   │   │   ├── HDiffPatch/
+│   │   │   │   ├── HSyniControlFile.cs    # HDiffPatch .hsyni reader/writer & .hsynz payload parser
+│   │   │   │   └── PackUInt.cs            # 7-bit variable-length integer pack/unpack with tagging
+│   │   │   └── ZSyncLegacy/
+│   │   │       └── LegacyZSyncControlFile.cs # Colin Phipps' zsync 0.6.2 ASCII header & binary table parser
 │   │   ├── Hashing/
-│   │   │   ├── FastXxHash64.cs          # Pure C# 64-bit xxHash (>10 GB/s, 0 external deps)
-│   │   │   └── RollingHash.cs           # O(1) sliding-window Adler-32 rolling hash
+│   │   │   ├── FastXxHash64.cs            # Pure C# 64-bit xxHash with incremental streaming State
+│   │   │   ├── FastAdler64.cs             # 64-bit Adler rolling hash matching HDiffPatch fast_adler64
+│   │   │   ├── HDiffPatchCheckChecksum.cs # XOR-accumulated check checksum matcher
+│   │   │   ├── RollingHash.cs             # 32-bit Adler rolling hash for legacy zsync
+│   │   │   └── Md4.cs                     # Managed MD4 implementation for legacy zsync
 │   │   ├── Model/
-│   │   │   ├── BlockChecksum.cs         # Block metadata (weak hash, xxHash64, compressed offsets)
-│   │   │   ├── ByteRange.cs             # Range coalescing helper to minimize roundtrips
-│   │   │   └── ZSyncControlFile.cs      # Binary & JSON control file reader/writer (.zsync)
+│   │   │   ├── BlockChecksum.cs           # Block metadata (weak hash, strong hash, offsets)
+│   │   │   ├── ByteRange.cs               # Range coalescing helper to minimize roundtrips
+│   │   │   └── ZSyncControlFile.cs        # Format-agnostic loader & sniffer (.hsyni & .zsync)
 │   │   ├── Transport/
-│   │   │   ├── IByteRangeSource.cs      # Transport abstraction for random-access reading
-│   │   │   ├── FileByteRangeSource.cs   # SMB / UNC (\\server\share\...) & local FileStream seeks
-│   │   │   ├── HttpByteRangeSource.cs   # RFC 7233 HTTP Range requests (Range: bytes=X-Y)
-│   │   │   └── ByteRangeSourceFactory.cs# Automatic transport selector (http/https vs smb/file)
+│   │   │   ├── IByteRangeSource.cs        # Transport abstraction for random-access reading
+│   │   │   ├── FileByteRangeSource.cs     # SMB / UNC (\\server\share\...) & local FileStream seeks
+│   │   │   ├── HttpByteRangeSource.cs     # RFC 7233 HTTP Range requests (Range: bytes=X-Y)
+│   │   │   └── ByteRangeSourceFactory.cs  # Automatic transport selector (http/https vs smb/file)
 │   │   └── Engine/
-│   │       ├── ZSyncControlBuilder.cs   # Single-pass I/O generator (.zsync + .gz + .gz.zsync)
-│   │       ├── ZSyncBlockMatcher.cs     # Sliding-window matcher scanning local base build
-│   │       └── ZSyncSyncEngine.cs       # Multi-transport delta reconstructor & verifier
-│   └── ZSync.Cli/                       # Standalone CLI tool (make & sync commands)
+│   │       ├── ZSyncControlBuilder.cs     # Single-pass streaming generator (.hsyni & .hsynz)
+│   │       ├── ZSyncBlockMatcher.cs       # Streaming sliding-window matcher with constant memory
+│   │       └── ZSyncSyncEngine.cs         # Single-pass atomic reconstructor & verifier
+│   └── ZSync.Cli/                         # Standalone CLI tool (make & sync commands)
 ├── tests/
-│   └── ZSync.Tests/                     # Comprehensive test suite (10/10 tests passing)
-│       ├── FastXxHash64Tests.cs         # Hashing correctness & multi-block slicing
-│       ├── RollingHashTests.cs          # O(1) rolling update equivalence proof
-│       ├── TransportTests.cs            # SMB/File & HTTP Range mock transport tests
-│       ├── ZSyncControlBuilderTests.cs  # Single-pass all-in-one generator tests
-│       └── ZSyncSyncEngineTests.cs      # End-to-end delta sync & verification tests
-├── ZSync.Net.slnx                       # Solution file
+│   └── ZSync.Tests/                       # Comprehensive test suite (26/26 tests passing)
+│       ├── FastXxHash64Tests.cs           # xxHash64 correctness & streaming state verification
+│       ├── RollingHashTests.cs            # Adler rolling update equivalence tests
+│       ├── TransportTests.cs              # SMB/File & HTTP Range transport tests
+│       ├── ZSyncControlBuilderTests.cs    # Single-pass generator tests
+│       ├── ZSyncSyncEngineTests.cs        # End-to-end delta sync & verification tests
+│       └── HDiffPatchInteroperabilityTests.cs # Live 2-way interop with native hsync_make / hsync_demo
+├── ZSync.Net.slnx                         # Solution file
 └── README.md
 ```
-
-### Detailed Component Responsibilities
-
-| Namespace / Directory | Class | Purpose |
-|---|---|---|
-| `ZSync.Core.Hashing` | `FastXxHash64` | Pure C# implementation of Yann Collet's 64-bit xxHash algorithm. Used for 100% collision-resistant strong block identification and whole-file integrity verification. |
-| `ZSync.Core.Hashing` | `RollingHash` | $O(1)$ Adler-32 sliding-window checksum. Computes rolling hashes byte-by-byte to detect matching blocks even when byte offsets shift due to code insertions or deletions. |
-| `ZSync.Core.Transport` | `IByteRangeSource` | Unified interface for reading random byte ranges `[offset, offset + length - 1]`. |
-| `ZSync.Core.Transport` | `FileByteRangeSource` | Reads byte ranges from local paths, mounted shares, and Windows SMB / UNC shares (`\\server\share\...`) using `FileStream.Seek()`. Leaves unneeded gigabytes on the remote server. |
-| `ZSync.Core.Transport` | `HttpByteRangeSource` | Reads byte ranges over HTTP / HTTPS using standard HTTP `Range:` headers. |
-| `ZSync.Core.Transport` | `ByteRangeSourceFactory` | Automatically inspects URI / path scheme (`http://`, `https://`, `\\`, `file://`) and instantiates the correct source. |
-| `ZSync.Core.Model` | `BlockChecksum` | Holds block index, uncompressed offset/length, weak hash, xxHash64, and compressed offset/length in `.gz`. |
-| `ZSync.Core.Model` | `ZSyncControlFile` | Manages reading and writing `.zsync` control files with magic header `ZSYNC_NET_V1`. |
-| `ZSync.Core.Engine` | `ZSyncControlBuilder` | Generates uncompressed `.zsync`, block-compressed `.gz`, and `.gz.zsync` files **in a single streaming pass**, eliminating repeated disk reads. |
-| `ZSync.Core.Engine` | `ZSyncBlockMatcher` | Scans existing local files using sliding-window hash matching to build a reuse map. |
-| `ZSync.Core.Engine` | `ZSyncSyncEngine` | Assembles the target file: copies matched blocks locally, streams missing ranges over HTTP or SMB, decompresses on the fly if GZip mode is active, and verifies whole-file SHA256 and xxHash64. |
 
 ---
 
@@ -123,56 +128,53 @@ ZSync.Net/
 ```
 [Target File: Quantum.Worker.dll (or service.exe / database.db)]
         │
-        ▼ (ZSyncControlBuilder.GenerateAllAsync - Single I/O Pass)
- ┌──────────────────────────────┬──────────────────────────────┬──────────────────────────────┐
- │                              │                              │                              │
- ▼                              ▼                              ▼                              ▼
-Quantum.Worker.dll.zsync       Quantum.Worker.dll.gz          Quantum.Worker.dll.gz.zsync
-(Uncompressed control)         (Block-compressed payload)     (Hashes & compressed offsets)
+        ▼ (ZSyncControlBuilder.GenerateAllAsync - Single-Pass Streaming)
+ ┌──────────────────────────────────────┬──────────────────────────────────────┐
+ │                                      │                                      │
+ ▼                                      ▼                                      ▼
+Quantum.Worker.dll.hsyni               Quantum.Worker.dll.hsynz
+(Bit-packed control file: Adler64/xxH) (Block-compressed streaming payload: zstd/zlib)
 
 ──────────────────────────────────────────────────────────────────────────────────
 
 [Client Synchronization Flow]
- 1. Read Quantum.Worker.dll.gz.zsync control file
- 2. Scan local existing Quantum.Worker.dll with sliding-window RollingHash + FastXxHash64
+ 1. Read Quantum.Worker.dll.hsyni (or legacy .zsync)
+ 2. Scan local existing seed with streaming sliding window (Adler64 / xxHash64)
     ├── Block 0: MATCHED locally ──► Copy directly from local file
     ├── Block 1: MATCHED locally ──► Copy directly from local file
     ├── Block 2: MISSING ──────────► Fetch compressed range from HTTP / SMB share ──► Decompress on the fly
     └── Block 3: MATCHED locally ──► Copy directly from local file
- 3. Output Quantum.Worker.dll reconstructed in staging
- 4. Verify SHA256 and xxHash64 against control file
+ 3. Concurrently update SHA-256, xxHash64, and HDiffPatchCheckChecksum during write
+ 4. Validate checksums and atomically move .zsnew.<guid> into place
 ```
-
-> **Note on File Types**: `ZSync.Net` operates on any file (regular binaries, service executables `.exe`, libraries `.dll`, database files `.db`, data files, or archives). A regular service binary (`Quantum.Worker.dll`) is used throughout the examples below.
 
 ---
 
 ## CLI Usage
 
-### 1. Generate Control Files & GZip Payload (Single Pass)
+### 1. Generate Control File & Zstandard Payload (Single Pass)
 ```bash
-# Example with a service binary / DLL
-dotnet ZSync.Cli.dll make Quantum.Worker.dll --block-size 4096 --out-dir /dist
+# Generate .hsyni and .hsynz with Zstandard compression (default)
+zsync make Quantum.Worker.dll --block-size 4096 --compress zstd --out-dir /dist
 ```
 Generates at once:
-- `/dist/Quantum.Worker.dll.zsync` (uncompressed control file)
-- `/dist/Quantum.Worker.dll.gz` (block-compressed GZip payload)
-- `/dist/Quantum.Worker.dll.gz.zsync` (compressed control file)
+- `/dist/Quantum.Worker.dll.hsyni` (HDiffPatch control file)
+- `/dist/Quantum.Worker.dll.hsynz` (Zstandard block-compressed payload)
 
 ### 2. Synchronize from HTTP/HTTPS
 ```bash
-dotnet ZSync.Cli.dll sync \
-  --control https://updates.example.com/Quantum.Worker.dll.gz.zsync \
-  --payload https://updates.example.com/Quantum.Worker.dll.gz \
+zsync sync \
+  --control https://updates.example.com/Quantum.Worker.dll.hsyni \
+  --payload https://updates.example.com/Quantum.Worker.dll.hsynz \
   --source /opt/quantum/current/Quantum.Worker.dll \
   --target /opt/quantum/staging/Quantum.Worker.dll
 ```
 
 ### 3. Synchronize from SMB / UNC Network Share
 ```bash
-dotnet ZSync.Cli.dll sync \
-  --control \\fileserver\updates\Quantum.Worker.dll.gz.zsync \
-  --payload \\fileserver\updates\Quantum.Worker.dll.gz \
+zsync sync \
+  --control \\fileserver\updates\Quantum.Worker.dll.hsyni \
+  --payload \\fileserver\updates\Quantum.Worker.dll.hsynz \
   --source /opt/quantum/current/Quantum.Worker.dll \
   --target /opt/quantum/staging/Quantum.Worker.dll
 ```
@@ -182,8 +184,8 @@ dotnet ZSync.Cli.dll sync \
 # When --source is omitted, ZSync automatically uses the existing target file as the base,
 # streams delta chunks into an atomic sibling (.zsnew.xxxx), verifies checksum, switches places,
 # and removes all temporary leftovers:
-dotnet ZSync.Cli.dll sync \
-  --control https://updates.example.com/Quantum.Worker.dll.gz.zsync \
+zsync sync \
+  --control https://updates.example.com/Quantum.Worker.dll.hsyni \
   --target /opt/quantum/Quantum.Worker.dll
 ```
 
@@ -195,11 +197,20 @@ dotnet ZSync.Cli.dll sync \
 ```csharp
 using ZSync.Core.Engine;
 
-// Generate .zsync, .gz, and .gz.zsync at once with minimum disk I/O
+// Generate .hsyni and .hsynz at once in a single streaming pass
 var summary = await ZSyncControlBuilder.GenerateAllAsync(
     inputFilePath: "Quantum.Worker.dll",
     outputDirectory: "/dist",
-    options: new ZSyncControlBuilderOptions { BlockSize = 4096 });
+    options: new ZSyncControlBuilderOptions 
+    { 
+        BlockSize = 4096,
+        CompressType = "zstd", // "zstd" or "zlib"
+        ChecksumType = "xxh64" // "xxh64" or "md5"
+    });
+
+Console.WriteLine($"Compressed: {summary.CompressedSize} bytes ({summary.CompressionRatio:F1}%)");
+Console.WriteLine($"Blocks:     {summary.BlockCount}");
+Console.WriteLine($"xxHash64:   0x{summary.XxHash64:X16}");
 ```
 
 ### Syncing / Reconstructing Files
@@ -208,21 +219,22 @@ using ZSync.Core.Engine;
 using ZSync.Core.Model;
 using ZSync.Core.Transport;
 
-// 1. Load control file (from HTTP URL, SMB path, or local file)
-var control = await ZSyncControlFile.LoadAsync("https://updates.example.com/Quantum.Worker.dll.gz.zsync");
+// 1. Load control file (supports .hsyni or legacy .zsync from HTTP, SMB, or local path)
+var control = await ZSyncControlFile.LoadAsync("https://updates.example.com/Quantum.Worker.dll.hsyni");
 
-// 2. Open range source (automatically detects HTTP vs SMB vs File)
-using var rangeSource = ByteRangeSourceFactory.Create("https://updates.example.com/Quantum.Worker.dll.gz");
+// 2. Open range source (automatically detects HTTP Range vs SMB FileStream seek)
+using var rangeSource = ByteRangeSourceFactory.Create("https://updates.example.com/Quantum.Worker.dll.hsynz");
 
 // 3. Reconstruct target file using existing local build
 var result = await ZSyncSyncEngine.SyncAsync(
     control: control,
     rangeSource: rangeSource,
-    localSourceFile: "Quantum.Worker.dll",
-    destinationPath: "Quantum.Worker.dll");
+    destinationPath: "/opt/quantum/Quantum.Worker.dll",
+    localSourceFile: "/opt/quantum/Quantum.Worker.dll");
 
-Console.WriteLine($"Bandwidth saved: {result.BandwidthSavingsPercentage:F1}%");
-Console.WriteLine($"Checksum verified: {result.ChecksumVerified}");
+Console.WriteLine($"Bandwidth saved: {result.BandwidthSavedRatio:F1}%");
+Console.WriteLine($"SHA256:          {result.Sha256}");
+Console.WriteLine($"xxHash64:        0x{result.XxHash64:X16}");
 ```
 
 ---
@@ -230,26 +242,23 @@ Console.WriteLine($"Checksum verified: {result.ChecksumVerified}");
 ## Building and Running Tests
 
 ```bash
-# Build solution
-dotnet build ZSync.Net.slnx
+# Build solution across .NET 8.0 & .NET 10.0
+XDG_RUNTIME_DIR=/tmp dotnet build ZSync.Net.slnx
 
-# Run test suite across all target frameworks (.NET 8 and .NET 10)
-dotnet test ZSync.Net.slnx
+# Run complete test suite (including live 2-way native HDiffPatch interop tests)
+XDG_RUNTIME_DIR=/tmp dotnet test ZSync.Net.slnx
 
 # Pack NuGet packages and .NET Global Tool
-dotnet pack ZSync.Net.slnx -c Release -o ./artifacts
+XDG_RUNTIME_DIR=/tmp dotnet pack ZSync.Net.slnx -c Release -o ./artifacts
 ```
 
 ---
 
 ## Acknowledgements & Prior Art
 
-- **[Hou Sisong (sisong/hdiffpatch)](https://github.com/sisong/hdiffpatch)**: Pioneered high-performance binary diffing algorithms and the block-compressed GZip sync format (`hsynz`).
+- **[Hou Sisong (sisong/hdiffpatch)](https://github.com/sisong/hdiffpatch)**: Pioneered high-performance binary diffing algorithms and the modern `HSyni23` / `HSynz23` delta sync specifications.
 - **[Colin Phipps (zsync)](http://zsync.moria.org.uk/)**: Invented the original client-driven HTTP range partial download algorithm.
-- **[Yann Collet (xxHash)](https://github.com/Cyan4973/xxHash)**: Creator of the ultra-fast xxHash algorithm.
-
-### AI-Assisted Porting & Development
-This project was conceptualized, ported, and verified with the assistance of advanced AI pair-programming, translating and modernizing the core concepts from C/C++ [HDiffPatch/libhsync](https://github.com/sisong/hdiffpatch) and [zsync](http://zsync.moria.org.uk/) into high-performance, idiomatic, zero-dependency C# for modern .NET (8.0 LTS & 10.0).
+- **[Yann Collet (xxHash & Zstandard)](https://github.com/Cyan4973/xxHash)**: Creator of the ultra-fast xxHash and Zstandard algorithms.
 
 ---
 

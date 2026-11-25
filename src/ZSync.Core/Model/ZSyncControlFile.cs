@@ -4,49 +4,66 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using ZSync.Core.Format.HDiffPatch;
+using ZSync.Core.Format.ZSyncLegacy;
 
 namespace ZSync.Core.Model
 {
+    public enum ControlFileFormat
+    {
+        HDiffPatch,
+        LegacyZSync
+    }
+
     public sealed class ZSyncControlFile
     {
-        public static readonly byte[] Magic = Encoding.ASCII.GetBytes("ZSYNC_NET_V1");
-
+        public ControlFileFormat Format { get; set; } = ControlFileFormat.HDiffPatch;
         public string FileName { get; set; } = string.Empty;
         public long FileLength { get; set; }
         public long CompressedFileLength { get; set; }
         public int BlockSize { get; set; } = 4096;
         public bool IsGzipCompressed { get; set; }
+        public string CompressType { get; set; } = "zstd";
+        public string ChecksumType { get; set; } = "xxh64";
         public string? PayloadUrl { get; set; }
         public string Sha256 { get; set; } = string.Empty;
+        public string Sha1 { get; set; } = string.Empty;
+        public ulong DictSize { get; set; }
+        public int SavedRollHashBits { get; set; } = 64;
+        public int SavedStrongChecksumBits { get; set; } = 64;
         public ulong XxHash64 { get; set; }
+        public byte[] NewDataChecksum { get; set; } = Array.Empty<byte>();
 
         public List<BlockChecksum> Blocks { get; set; } = new();
 
         public async Task SaveAsync(Stream stream, CancellationToken cancellationToken = default)
         {
-            await stream.WriteAsync(Magic, 0, Magic.Length, cancellationToken).ConfigureAwait(false);
-
-            using var bw = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-            bw.Write(FileName ?? string.Empty);
-            bw.Write(FileLength);
-            bw.Write(CompressedFileLength);
-            bw.Write(BlockSize);
-            bw.Write(IsGzipCompressed);
-            bw.Write(PayloadUrl ?? string.Empty);
-            bw.Write(Sha256 ?? string.Empty);
-            bw.Write(XxHash64);
-
-            bw.Write(Blocks.Count);
-            foreach (var b in Blocks)
+            if (Format == ControlFileFormat.HDiffPatch)
             {
-                bw.Write(b.BlockIndex);
-                bw.Write(b.UncompressedOffset);
-                bw.Write(b.UncompressedLength);
-                bw.Write(b.WeakHash);
-                bw.Write(b.StrongHash);
-                bw.Write(b.IsCompressed);
-                bw.Write(b.CompressedOffset);
-                bw.Write(b.CompressedLength);
+                var hsyni = new HSyniControlFile
+                {
+                    CompressType = CompressType,
+                    ChecksumType = ChecksumType,
+                    BlockSize = BlockSize,
+                    FileLength = FileLength,
+                    NewSyncDataSize = CompressedFileLength,
+                    NewSyncDataOffset = 0,
+                    NewDataChecksum = NewDataChecksum,
+                    Blocks = Blocks
+                };
+                await hsyni.SaveAsync(stream, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                var legacy = new LegacyZSyncControlFile
+                {
+                    FileName = FileName,
+                    FileLength = FileLength,
+                    BlockSize = BlockSize,
+                    Url = PayloadUrl,
+                    Blocks = Blocks
+                };
+                await legacy.SaveAsync(stream, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -64,45 +81,56 @@ namespace ZSync.Core.Model
 
         public static async Task<ZSyncControlFile> LoadAsync(Stream stream, CancellationToken cancellationToken = default)
         {
-            var magicBuf = new byte[Magic.Length];
-            int read = await stream.ReadAsync(magicBuf, 0, magicBuf.Length, cancellationToken).ConfigureAwait(false);
-            if (read < Magic.Length || !MemoryExtensions.SequenceEqual<byte>(magicBuf, Magic))
+            if (!stream.CanSeek)
             {
-                throw new InvalidDataException("Invalid ZSync control file: magic header mismatch.");
+                var ms = new MemoryStream();
+                await stream.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
+                ms.Position = 0;
+                return await LoadAsync(ms, cancellationToken).ConfigureAwait(false);
             }
 
-            using var br = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
-            var control = new ZSyncControlFile
-            {
-                FileName = br.ReadString(),
-                FileLength = br.ReadInt64(),
-                CompressedFileLength = br.ReadInt64(),
-                BlockSize = br.ReadInt32(),
-                IsGzipCompressed = br.ReadBoolean(),
-                PayloadUrl = br.ReadString(),
-                Sha256 = br.ReadString(),
-                XxHash64 = br.ReadUInt64()
-            };
+            long startPos = stream.Position;
+            byte[] sniffBuf = new byte[16];
+            int read = await stream.ReadAsync(sniffBuf, 0, sniffBuf.Length, cancellationToken).ConfigureAwait(false);
+            stream.Position = startPos;
 
-            int count = br.ReadInt32();
-            control.Blocks = new List<BlockChecksum>(count);
-
-            for (int i = 0; i < count; i++)
+            if (HSyniControlFile.IsHSyni(sniffBuf.AsSpan(0, read)))
             {
-                control.Blocks.Add(new BlockChecksum
+                var hsyni = await HSyniControlFile.LoadAsync(stream, cancellationToken).ConfigureAwait(false);
+                return new ZSyncControlFile
                 {
-                    BlockIndex = br.ReadInt32(),
-                    UncompressedOffset = br.ReadInt64(),
-                    UncompressedLength = br.ReadInt32(),
-                    WeakHash = br.ReadUInt32(),
-                    StrongHash = br.ReadUInt64(),
-                    IsCompressed = br.ReadBoolean(),
-                    CompressedOffset = br.ReadInt64(),
-                    CompressedLength = br.ReadInt32()
-                });
+                    Format = ControlFileFormat.HDiffPatch,
+                    BlockSize = hsyni.BlockSize,
+                    FileLength = hsyni.FileLength,
+                    CompressedFileLength = hsyni.NewSyncDataSize,
+                    CompressType = hsyni.CompressType,
+                    ChecksumType = hsyni.ChecksumType,
+                    DictSize = hsyni.DictSize,
+                    SavedRollHashBits = hsyni.SavedRollHashBits,
+                    SavedStrongChecksumBits = hsyni.SavedStrongChecksumBits,
+                    NewDataChecksum = hsyni.NewDataChecksum,
+                    Blocks = hsyni.Blocks
+                };
             }
-
-            return control;
+            else if (LegacyZSyncControlFile.IsLegacyZSync(sniffBuf.AsSpan(0, read)))
+            {
+                var legacy = await LegacyZSyncControlFile.LoadAsync(stream, cancellationToken).ConfigureAwait(false);
+                return new ZSyncControlFile
+                {
+                    Format = ControlFileFormat.LegacyZSync,
+                    FileName = legacy.FileName,
+                    BlockSize = legacy.BlockSize,
+                    FileLength = legacy.FileLength,
+                    CompressedFileLength = legacy.FileLength,
+                    PayloadUrl = legacy.Url,
+                    Sha1 = legacy.Sha1 ?? string.Empty,
+                    Blocks = legacy.Blocks
+                };
+            }
+            else
+            {
+                throw new InvalidDataException("Unrecognized control file format: expected HDiffPatch (.hsyni) or legacy zsync (.zsync).");
+            }
         }
 
         public static async Task<ZSyncControlFile> LoadAsync(string filePath, CancellationToken cancellationToken = default)
@@ -113,7 +141,12 @@ namespace ZSync.Core.Model
             }
 
             using var fs = File.OpenRead(filePath);
-            return await LoadAsync(fs, cancellationToken).ConfigureAwait(false);
+            var control = await LoadAsync(fs, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(control.FileName))
+            {
+                control.FileName = Path.GetFileNameWithoutExtension(filePath);
+            }
+            return control;
         }
     }
 }

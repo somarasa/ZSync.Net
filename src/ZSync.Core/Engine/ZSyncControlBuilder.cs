@@ -1,10 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using ZSync.Core.Compression;
+using ZSync.Core.Format.HDiffPatch;
 using ZSync.Core.Hashing;
 using ZSync.Core.Model;
 
@@ -13,33 +13,27 @@ namespace ZSync.Core.Engine
     public sealed class ZSyncControlBuilderOptions
     {
         public int BlockSize { get; set; } = 4096;
-        public CompressionLevel CompressionLevel { get; set; } = CompressionLevel.Optimal;
-        public string? PayloadUrl { get; set; }
-        public string? GzipPayloadUrl { get; set; }
+        public string CompressType { get; set; } = "zstd"; // "zstd", "zlib", or ""
+        public string ChecksumType { get; set; } = "xxh64";
+        public int CompressionLevel { get; set; } = 3;
     }
 
     public sealed class ZSyncGenerationSummary
     {
-        public string UncompressedControlPath { get; set; } = string.Empty;
-        public string GzipPayloadPath { get; set; } = string.Empty;
-        public string GzipControlPath { get; set; } = string.Empty;
+        public string ControlPath { get; set; } = string.Empty;
+        public string PayloadPath { get; set; } = string.Empty;
         public long UncompressedSize { get; set; }
-        public long GzipSize { get; set; }
+        public long CompressedSize { get; set; }
         public int BlockCount { get; set; }
-        public string Sha256 { get; set; } = string.Empty;
         public ulong XxHash64 { get; set; }
-        public double CompressionRatio => UncompressedSize > 0 ? (double)GzipSize / UncompressedSize * 100.0 : 0.0;
+        public double CompressionRatio => UncompressedSize > 0 ? (double)CompressedSize / UncompressedSize * 100.0 : 0.0;
     }
 
     /// <summary>
-    /// Builds ZSync control files (.zsync) and generates block-compressed GZip payloads (.gz).
-    /// Capable of generating uncompressed control, compressed control, and gzip file in a single streaming pass to minimize disk I/O.
+    /// Builds HDiffPatch-compatible .hsyni control files and .hsynz payloads in a single streaming pass.
     /// </summary>
     public static class ZSyncControlBuilder
     {
-        /// <summary>
-        /// Generates the uncompressed .zsync file, the block-compressed .gz file, and the .gz.zsync file all at once in a single streaming pass to minimize disk I/O.
-        /// </summary>
         public static async Task<ZSyncGenerationSummary> GenerateAllAsync(
             string inputFilePath,
             string? outputDirectory = null,
@@ -59,231 +53,139 @@ namespace ZSync.Core.Engine
             }
 
             var baseFileName = Path.GetFileName(inputFilePath);
-            var uncompressedControlPath = Path.Combine(outDir, baseFileName + ".zsync");
-            var gzipPayloadPath = Path.Combine(outDir, baseFileName + ".gz");
-            var gzipControlPath = Path.Combine(outDir, baseFileName + ".gz.zsync");
+            var hsyniPath = Path.Combine(outDir, baseFileName + ".hsyni");
+            var hsynzPath = Path.Combine(outDir, baseFileName + ".hsynz");
 
             using var inputStream = new FileStream(inputFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 131072, useAsync: true);
-            using var outputGzStream = new FileStream(gzipPayloadPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 131072, useAsync: true);
+            using var outputHsynzStream = new FileStream(hsynzPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 131072, useAsync: true);
 
-            var uncompressedControl = new ZSyncControlFile
+            string normCompressType = options.CompressType switch
             {
-                FileName = baseFileName,
-                BlockSize = options.BlockSize,
-                IsGzipCompressed = false,
-                PayloadUrl = options.PayloadUrl ?? baseFileName
+                "zstd" or "zstdD" => "zstdD",
+                "zlib" or "zlibD" or "ldef" => "zlibD",
+                "gzip" or "gzipD" => "gzipD",
+                _ => string.Empty
             };
 
-            var gzipControl = new ZSyncControlFile
+            var control = new HSyniControlFile
             {
-                FileName = baseFileName,
+                CompressType = normCompressType,
+                ChecksumType = options.ChecksumType,
                 BlockSize = options.BlockSize,
-                IsGzipCompressed = true,
-                PayloadUrl = options.GzipPayloadUrl ?? (baseFileName + ".gz")
+                FileLength = inputStream.Length,
+                ChecksumByteSize = options.ChecksumType == "md5" ? 16 : 8,
+                SavedStrongChecksumBits = options.ChecksumType == "md5" ? 128 : 64,
+                SavedRollHashBits = 64
             };
 
-            using var sha256 = SHA256.Create();
-            using var wholeFileHasherStream = new MemoryStream();
+            // Write .hsynz head: HSynz23&<compressType>&<strongChecksumType>\0, packUInt(newDataSize), packUInt(kSyncBlockSize), packUInt(checksumByteSize)
+            byte[] hsynzHeadType = System.Text.Encoding.ASCII.GetBytes($"{HSyniControlFile.MagicPayload}&{normCompressType}&{options.ChecksumType}\0");
+            await outputHsynzStream.WriteAsync(hsynzHeadType, cancellationToken).ConfigureAwait(false);
+            PackUInt.WriteUInt(outputHsynzStream, (ulong)inputStream.Length);
+            PackUInt.WriteUInt(outputHsynzStream, (ulong)options.BlockSize);
+            PackUInt.WriteUInt(outputHsynzStream, (ulong)control.ChecksumByteSize);
+
+            long hsynzDataOffset = outputHsynzStream.Position;
+            control.NewSyncDataOffset = hsynzDataOffset;
+
+            IBlockCompressor? compressor = normCompressType switch
+            {
+                "zstdD" => ZstdBlockCompressor.Instance,
+                "zlibD" or "gzipD" => DeflateBlockCompressor.Instance,
+                _ => null
+            };
 
             var buffer = new byte[options.BlockSize];
             int blockIndex = 0;
             long uncompressedOffset = 0;
-            long compressedOffset = 0;
+            long compressedOffset = hsynzDataOffset;
             int bytesRead;
+
+            var xxHashState = new FastXxHash64.State();
+            var checkChecksum = new HDiffPatchCheckChecksum(options.ChecksumType, control.ChecksumByteSize);
 
             while ((bytesRead = await inputStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var blockSpan = buffer.AsSpan(0, bytesRead);
 
-                // Compute weak Adler32 and strong xxHash64 on uncompressed block
-                uint weakHash = RollingHash.Calculate(blockSpan);
-                ulong strongHash = FastXxHash64.Hash(blockSpan);
+                xxHashState.Update(blockSpan);
 
-                // 1. Add to uncompressed control
-                uncompressedControl.Blocks.Add(new BlockChecksum
+                ulong weakHash = FastAdler64.Compute(blockSpan);
+                byte[] strongHashBytes;
+                if (options.ChecksumType == "md5")
                 {
-                    BlockIndex = blockIndex,
-                    UncompressedOffset = uncompressedOffset,
-                    UncompressedLength = bytesRead,
-                    WeakHash = weakHash,
-                    StrongHash = strongHash,
-                    IsCompressed = false,
-                    CompressedOffset = 0,
-                    CompressedLength = 0
-                });
+                    strongHashBytes = MD5.HashData(blockSpan);
+                }
+                else if (options.ChecksumType == "sha256")
+                {
+                    strongHashBytes = SHA256.HashData(blockSpan);
+                }
+                else
+                {
+                    strongHashBytes = new byte[8];
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(strongHashBytes, FastXxHash64.Hash(blockSpan));
+                }
+                ulong strongHash = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(strongHashBytes.AsSpan(0, 8));
 
-                // 2. Compress block for GZip payload (reuses in-memory stream buffer)
-                using var blockMs = new MemoryStream();
-                using (var deflate = new DeflateStream(blockMs, options.CompressionLevel, leaveOpen: true))
+                checkChecksum.AppendBlock(blockIndex, strongHashBytes);
+
+                byte[]? compressedChunk = compressor?.Compress(blockSpan, options.CompressionLevel);
+                int chunkLen = compressedChunk != null ? compressedChunk.Length : bytesRead;
+
+                if (compressedChunk != null)
                 {
-                    await deflate.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
+                    await outputHsynzStream.WriteAsync(compressedChunk, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await outputHsynzStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
                 }
 
-                var compressedBytes = blockMs.ToArray();
-                await outputGzStream.WriteAsync(compressedBytes, cancellationToken).ConfigureAwait(false);
-
-                // 3. Add to gzip control (mapping uncompressed hashes to compressed offsets)
-                gzipControl.Blocks.Add(new BlockChecksum
+                control.Blocks.Add(new BlockChecksum
                 {
                     BlockIndex = blockIndex,
                     UncompressedOffset = uncompressedOffset,
                     UncompressedLength = bytesRead,
                     WeakHash = weakHash,
                     StrongHash = strongHash,
-                    IsCompressed = true,
+                    StrongHashBytes = strongHashBytes,
+                    IsCompressed = compressor != null,
                     CompressedOffset = compressedOffset,
-                    CompressedLength = compressedBytes.Length
+                    CompressedLength = chunkLen
                 });
 
                 blockIndex++;
-                sha256.TransformBlock(buffer, 0, bytesRead, null, 0);
-                wholeFileHasherStream.Write(buffer, 0, bytesRead);
-
                 uncompressedOffset += bytesRead;
-                compressedOffset += compressedBytes.Length;
+                compressedOffset += chunkLen;
             }
 
-            sha256.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            var shaHex = BitConverter.ToString(sha256.Hash!).Replace("-", "").ToLowerInvariant();
-            var xxHash = FastXxHash64.Hash(wholeFileHasherStream.ToArray());
+            // Compute whole file checksum
+            ulong fullXxHash = xxHashState.Digest();
+            byte[] fileChecksumBytes = checkChecksum.GetResult();
 
-            uncompressedControl.FileLength = uncompressedOffset;
-            uncompressedControl.CompressedFileLength = 0;
-            uncompressedControl.Sha256 = shaHex;
-            uncompressedControl.XxHash64 = xxHash;
+            // Write .hsynz foot: newDataCheckChecksum
+            await outputHsynzStream.WriteAsync(fileChecksumBytes, cancellationToken).ConfigureAwait(false);
+            long totalHsynzSize = outputHsynzStream.Position;
 
-            gzipControl.FileLength = uncompressedOffset;
-            gzipControl.CompressedFileLength = compressedOffset;
-            gzipControl.Sha256 = shaHex;
-            gzipControl.XxHash64 = xxHash;
+            control.NewSyncDataSize = totalHsynzSize;
+            control.NewDataChecksum = fileChecksumBytes;
 
-            // Save both control files
-            await uncompressedControl.SaveAsync(uncompressedControlPath, cancellationToken).ConfigureAwait(false);
-            await gzipControl.SaveAsync(gzipControlPath, cancellationToken).ConfigureAwait(false);
+            // Write .hsyni
+            using (var hsyniStream = File.Create(hsyniPath))
+            {
+                await control.SaveAsync(hsyniStream, cancellationToken).ConfigureAwait(false);
+            }
 
             return new ZSyncGenerationSummary
             {
-                UncompressedControlPath = uncompressedControlPath,
-                GzipPayloadPath = gzipPayloadPath,
-                GzipControlPath = gzipControlPath,
+                ControlPath = hsyniPath,
+                PayloadPath = hsynzPath,
                 UncompressedSize = uncompressedOffset,
-                GzipSize = compressedOffset,
+                CompressedSize = totalHsynzSize,
                 BlockCount = blockIndex,
-                Sha256 = shaHex,
-                XxHash64 = xxHash
+                XxHash64 = fullXxHash
             };
-        }
-
-        /// <summary>
-        /// Generates a single ZSync control file (with or without gzip compression).
-        /// </summary>
-        public static async Task<ZSyncControlFile> BuildAsync(
-            string inputFilePath,
-            string outputControlPath,
-            string? outputGzipPath = null,
-            ZSyncControlBuilderOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (!File.Exists(inputFilePath))
-            {
-                throw new FileNotFoundException($"Input file not found at '{inputFilePath}'.");
-            }
-
-            options ??= new ZSyncControlBuilderOptions();
-            var enableGzip = !string.IsNullOrWhiteSpace(outputGzipPath);
-
-            using var inputStream = new FileStream(inputFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 131072, useAsync: true);
-            Stream? outputGzStream = null;
-            if (enableGzip && !string.IsNullOrWhiteSpace(outputGzipPath))
-            {
-                var dir = Path.GetDirectoryName(outputGzipPath);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-                outputGzStream = new FileStream(outputGzipPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 131072, useAsync: true);
-            }
-
-            try
-            {
-                var control = new ZSyncControlFile
-                {
-                    FileName = Path.GetFileName(inputFilePath),
-                    BlockSize = options.BlockSize,
-                    IsGzipCompressed = enableGzip && outputGzStream != null,
-                    PayloadUrl = options.PayloadUrl
-                };
-
-                using var sha256 = SHA256.Create();
-                using var wholeFileHasherStream = new MemoryStream();
-
-                var buffer = new byte[options.BlockSize];
-                int blockIndex = 0;
-                long uncompressedOffset = 0;
-                long compressedOffset = 0;
-                int bytesRead;
-
-                while ((bytesRead = await inputStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var blockSpan = buffer.AsSpan(0, bytesRead);
-
-                    uint weakHash = RollingHash.Calculate(blockSpan);
-                    ulong strongHash = FastXxHash64.Hash(blockSpan);
-
-                    bool isCompressed = false;
-                    int compressedLength = 0;
-
-                    if (control.IsGzipCompressed && outputGzStream != null)
-                    {
-                        using var blockMs = new MemoryStream();
-                        using (var deflate = new DeflateStream(blockMs, options.CompressionLevel, leaveOpen: true))
-                        {
-                            await deflate.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
-                        }
-
-                        var compressedBytes = blockMs.ToArray();
-                        isCompressed = true;
-                        compressedLength = compressedBytes.Length;
-                        await outputGzStream.WriteAsync(compressedBytes, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    control.Blocks.Add(new BlockChecksum
-                    {
-                        BlockIndex = blockIndex++,
-                        UncompressedOffset = uncompressedOffset,
-                        UncompressedLength = bytesRead,
-                        WeakHash = weakHash,
-                        StrongHash = strongHash,
-                        IsCompressed = isCompressed,
-                        CompressedOffset = compressedOffset,
-                        CompressedLength = compressedLength
-                    });
-
-                    sha256.TransformBlock(buffer, 0, bytesRead, null, 0);
-                    wholeFileHasherStream.Write(buffer, 0, bytesRead);
-
-                    uncompressedOffset += bytesRead;
-                    compressedOffset += compressedLength;
-                }
-
-                sha256.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-                control.Sha256 = BitConverter.ToString(sha256.Hash!).Replace("-", "").ToLowerInvariant();
-                control.XxHash64 = FastXxHash64.Hash(wholeFileHasherStream.ToArray());
-                control.FileLength = uncompressedOffset;
-                control.CompressedFileLength = compressedOffset;
-
-                await control.SaveAsync(outputControlPath, cancellationToken).ConfigureAwait(false);
-                return control;
-            }
-            finally
-            {
-                if (outputGzStream != null)
-                {
-                    await outputGzStream.DisposeAsync().ConfigureAwait(false);
-                }
-            }
         }
     }
 }

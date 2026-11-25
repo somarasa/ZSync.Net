@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Text;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using ZSync.Core.Engine;
@@ -30,7 +29,7 @@ namespace ZSync.Tests
         }
 
         [Test]
-        public async Task GenerateAllAsync_GeneratesUncompressedAndGzipAndControlFilesAtOnce()
+        public async Task GenerateAllAsync_GeneratesHDiffPatchFilesWithZstd()
         {
             var inputFile = Path.Combine(_tempDir, "app.bin");
             var data = new byte[10000];
@@ -40,29 +39,49 @@ namespace ZSync.Tests
             var summary = await ZSyncControlBuilder.GenerateAllAsync(
                 inputFile,
                 _tempDir,
-                new ZSyncControlBuilderOptions { BlockSize = 2048 });
+                new ZSyncControlBuilderOptions
+                {
+                    BlockSize = 2048,
+                    CompressType = "zstd"
+                });
 
-            Assert.That(File.Exists(summary.UncompressedControlPath), Is.True);
-            Assert.That(File.Exists(summary.GzipPayloadPath), Is.True);
-            Assert.That(File.Exists(summary.GzipControlPath), Is.True);
-
+            Assert.That(File.Exists(summary.ControlPath), Is.True);
+            Assert.That(File.Exists(summary.PayloadPath), Is.True);
             Assert.That(summary.UncompressedSize, Is.EqualTo(10000));
-            Assert.That(summary.GzipSize, Is.GreaterThan(0));
-            Assert.That(summary.BlockCount, Is.EqualTo(5)); // 10000 / 2048 = 4 full blocks + 1 partial block
+            Assert.That(summary.CompressedSize, Is.GreaterThan(0));
+            Assert.That(summary.BlockCount, Is.EqualTo(5));
 
-            // Load uncompressed control
-            var uncompressedCtrl = await ZSyncControlFile.LoadAsync(summary.UncompressedControlPath);
-            Assert.That(uncompressedCtrl.IsGzipCompressed, Is.False);
-            Assert.That(uncompressedCtrl.Blocks.Count, Is.EqualTo(5));
-            Assert.That(uncompressedCtrl.FileLength, Is.EqualTo(10000));
+            var ctrl = await ZSyncControlFile.LoadAsync(summary.ControlPath);
+            Assert.That(ctrl.Format, Is.EqualTo(ControlFileFormat.HDiffPatch));
+            Assert.That(ctrl.Blocks.Count, Is.EqualTo(5));
+            Assert.That(ctrl.FileLength, Is.EqualTo(10000));
+            Assert.That(ctrl.CompressType, Is.EqualTo("zstdD"));
+        }
 
-            // Load gzip control
-            var gzipCtrl = await ZSyncControlFile.LoadAsync(summary.GzipControlPath);
-            Assert.That(gzipCtrl.IsGzipCompressed, Is.True);
-            Assert.That(gzipCtrl.Blocks.Count, Is.EqualTo(5));
-            Assert.That(gzipCtrl.FileLength, Is.EqualTo(10000));
-            Assert.That(gzipCtrl.CompressedFileLength, Is.EqualTo(summary.GzipSize));
-            Assert.That(gzipCtrl.Blocks[0].IsCompressed, Is.True);
+        [Test]
+        public async Task GenerateAllAsync_GeneratesHDiffPatchFilesWithZlib()
+        {
+            var inputFile = Path.Combine(_tempDir, "app_zlib.bin");
+            var data = new byte[8192];
+            new Random(123).NextBytes(data);
+            await File.WriteAllBytesAsync(inputFile, data);
+
+            var summary = await ZSyncControlBuilder.GenerateAllAsync(
+                inputFile,
+                _tempDir,
+                new ZSyncControlBuilderOptions
+                {
+                    BlockSize = 4096,
+                    CompressType = "zlib"
+                });
+
+            Assert.That(File.Exists(summary.ControlPath), Is.True);
+            Assert.That(File.Exists(summary.PayloadPath), Is.True);
+
+            var ctrl = await ZSyncControlFile.LoadAsync(summary.ControlPath);
+            Assert.That(ctrl.Blocks.Count, Is.EqualTo(2));
+            Assert.That(ctrl.FileLength, Is.EqualTo(8192));
+            Assert.That(ctrl.CompressType, Is.EqualTo("zlibD"));
         }
     }
 }

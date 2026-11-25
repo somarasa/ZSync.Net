@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using ZSync.Core.Hashing;
@@ -40,7 +41,7 @@ namespace ZSync.Core.Engine
                 };
             }
 
-            var weakLookup = new Dictionary<uint, List<BlockChecksum>>();
+            var weakLookup = new Dictionary<ulong, List<BlockChecksum>>();
             foreach (var block in control.Blocks)
             {
                 if (!weakLookup.TryGetValue(block.WeakHash, out var list))
@@ -54,65 +55,127 @@ namespace ZSync.Core.Engine
             var matched = new Dictionary<int, MatchedBlock>();
             int blockSize = control.BlockSize;
 
-            var localBytes = await File.ReadAllBytesAsync(localFilePath, cancellationToken).ConfigureAwait(false);
-            if (localBytes.Length >= blockSize)
+            using (var stream = new FileStream(localFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 131072, useAsync: true))
             {
-                var roller = new RollingHash(blockSize);
-                int limit = localBytes.Length - blockSize;
-                int pos = 0;
-
-                roller.Compute(localBytes.AsSpan(0, blockSize));
-
-                while (pos <= limit)
+                if (stream.Length >= blockSize)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    bool isHDiff = control.Format == ControlFileFormat.HDiffPatch;
+                    FastAdler64 fadler = isHDiff ? new FastAdler64(blockSize) : default;
+                    RollingHash rsum = !isHDiff ? new RollingHash(blockSize) : default;
 
-                    uint currentWeak = roller.Value;
-                    if (weakLookup.TryGetValue(currentWeak, out var candidates) && candidates.Count > 0)
+                    const int bufferChunkSize = 1024 * 1024; // 1 MB streaming window
+                    byte[] buffer = new byte[bufferChunkSize + blockSize];
+                    int bytesInBuffer = 0;
+                    long streamBaseOffset = 0;
+                    bool initialized = false;
+
+                    while (true)
                     {
-                        var windowSpan = localBytes.AsSpan(pos, blockSize);
-                        ulong currentStrong = FastXxHash64.Hash(windowSpan);
+                        cancellationToken.ThrowIfCancellationRequested();
 
-                        BlockChecksum? found = null;
-                        for (int i = 0; i < candidates.Count; i++)
+                        int toRead = buffer.Length - bytesInBuffer;
+                        int read = await stream.ReadAsync(buffer.AsMemory(bytesInBuffer, toRead), cancellationToken).ConfigureAwait(false);
+                        bytesInBuffer += read;
+
+                        if (bytesInBuffer < blockSize)
+                            break;
+
+                        int pos = 0;
+                        int limit = bytesInBuffer - blockSize;
+
+                        if (!initialized)
                         {
-                            var c = candidates[i];
-                            if (c.StrongHash == currentStrong && !matched.ContainsKey(c.BlockIndex))
+                            if (isHDiff)
+                                fadler.Init(buffer.AsSpan(0, blockSize));
+                            else
+                                rsum.Compute(buffer.AsSpan(0, blockSize));
+                            initialized = true;
+                        }
+
+                        while (pos <= limit)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+
+                            ulong currentWeak = isHDiff
+                                ? FastAdler64.ToSavedPartRollHash(fadler.Value, control.SavedRollHashBits)
+                                : rsum.Value;
+
+                            if (weakLookup.TryGetValue(currentWeak, out var candidates) && candidates.Count > 0)
                             {
-                                found = c;
-                                candidates.RemoveAt(i);
-                                break;
+                                var windowSpan = buffer.AsSpan(pos, blockSize);
+                                ulong currentStrong = ComputeStrongHash(control.ChecksumType, windowSpan, control.SavedStrongChecksumBits);
+
+                                BlockChecksum? found = null;
+                                for (int i = 0; i < candidates.Count; i++)
+                                {
+                                    var c = candidates[i];
+                                    if (c.StrongHash == currentStrong && !matched.ContainsKey(c.BlockIndex))
+                                    {
+                                        found = c;
+                                        candidates.RemoveAt(i);
+                                        break;
+                                    }
+                                }
+
+                                if (found != null)
+                                {
+                                    matched[found.BlockIndex] = new MatchedBlock
+                                    {
+                                        TargetBlock = found,
+                                        SourceFilePath = localFilePath,
+                                        SourceOffset = streamBaseOffset + pos,
+                                        Length = blockSize
+                                    };
+
+                                    // Advance by full block size
+                                    pos += blockSize;
+                                    if (pos <= limit)
+                                    {
+                                        if (isHDiff)
+                                            fadler.Init(buffer.AsSpan(pos, blockSize));
+                                        else
+                                            rsum.Compute(buffer.AsSpan(pos, blockSize));
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            // Roll forward by 1 byte
+                            if (pos < limit)
+                            {
+                                byte oldByte = buffer[pos];
+                                byte newByte = buffer[pos + blockSize];
+                                if (isHDiff)
+                                    fadler.Roll(oldByte, newByte);
+                                else
+                                    rsum.Roll(oldByte, newByte);
+                            }
+                            pos++;
+                        }
+
+                        int remaining = bytesInBuffer - pos;
+                        if (remaining > 0)
+                        {
+                            Buffer.BlockCopy(buffer, pos, buffer, 0, remaining);
+                            bytesInBuffer = remaining;
+                            streamBaseOffset += pos;
+                            initialized = false;
+                        }
+                        else
+                        {
+                            int excess = pos - bytesInBuffer;
+                            streamBaseOffset += pos;
+                            bytesInBuffer = 0;
+                            initialized = false;
+                            if (excess > 0)
+                            {
+                                stream.Seek(excess, SeekOrigin.Current);
                             }
                         }
 
-                        if (found != null)
-                        {
-                            matched[found.BlockIndex] = new MatchedBlock
-                            {
-                                TargetBlock = found,
-                                SourceFilePath = localFilePath,
-                                SourceOffset = pos,
-                                Length = blockSize
-                            };
-
-                            // Advance by full block size
-                            pos += blockSize;
-                            if (pos <= limit)
-                            {
-                                roller.Compute(localBytes.AsSpan(pos, blockSize));
-                            }
-                            continue;
-                        }
+                        if (read == 0)
+                            break;
                     }
-
-                    // Roll forward by 1 byte
-                    if (pos < limit)
-                    {
-                        byte oldByte = localBytes[pos];
-                        byte newByte = localBytes[pos + blockSize];
-                        roller.Roll(oldByte, newByte);
-                    }
-                    pos++;
                 }
             }
 
@@ -125,6 +188,46 @@ namespace ZSync.Core.Engine
                 MatchedBlocks = matched,
                 MissingBlocks = missing
             };
+        }
+
+        private static ulong ComputeStrongHash(string checksumType, ReadOnlySpan<byte> window, int savedStrongChecksumBits = 64)
+        {
+            if (checksumType.StartsWith("md5", StringComparison.OrdinalIgnoreCase))
+            {
+                Span<byte> md5Buf = stackalloc byte[16];
+                MD5.HashData(window, md5Buf);
+                return ToPartChecksum(md5Buf, savedStrongChecksumBits);
+            }
+            else if (checksumType.StartsWith("md4", StringComparison.OrdinalIgnoreCase))
+            {
+                Span<byte> md4Buf = stackalloc byte[16];
+                Md4.Hash(window, md4Buf);
+                return ToPartChecksum(md4Buf, savedStrongChecksumBits);
+            }
+            else
+            {
+                Span<byte> xxBuf = stackalloc byte[8];
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(xxBuf, FastXxHash64.Hash(window));
+                return ToPartChecksum(xxBuf, savedStrongChecksumBits);
+            }
+        }
+
+        private static ulong ToPartChecksum(ReadOnlySpan<byte> checksum, int outPartBits)
+        {
+            if (outPartBits <= 0) return 0;
+            int outPartBytes = (outPartBits + 7) / 8;
+            Span<byte> partBuf = stackalloc byte[outPartBytes];
+            checksum.Slice(0, Math.Min(outPartBytes, checksum.Length)).CopyTo(partBuf);
+            if (outPartBytes * 8 > outPartBits)
+            {
+                partBuf[0] &= (byte)((1 << (outPartBits & 7)) - 1);
+            }
+            ulong v = 0;
+            for (int i = 0; i < outPartBytes; i++)
+            {
+                v |= ((ulong)partBuf[i]) << (i * 8);
+            }
+            return v;
         }
     }
 }

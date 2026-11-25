@@ -1,58 +1,61 @@
 using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using ZSync.Core.Compression;
 using ZSync.Core.Hashing;
 using ZSync.Core.Model;
 using ZSync.Core.Transport;
 
 namespace ZSync.Core.Engine
 {
+    public sealed class ZSyncProgressReport
+    {
+        public int TotalBlocks { get; init; }
+        public int ProcessedBlocks { get; init; }
+        public long LocalReusedBytes { get; init; }
+        public long DownloadedBytes { get; init; }
+        public long TotalBytes { get; init; }
+        public double Percentage => TotalBlocks > 0 ? (double)ProcessedBlocks / TotalBlocks * 100.0 : 0.0;
+    }
+
     public sealed class ZSyncResult
     {
-        public string DestinationPath { get; init; } = string.Empty;
+        public string TargetPath { get; init; } = string.Empty;
         public long TotalBytes { get; init; }
         public long LocalReusedBytes { get; init; }
         public long DownloadedBytes { get; init; }
-        public double BandwidthSavingsPercentage => TotalBytes > 0 ? (double)LocalReusedBytes / TotalBytes * 100.0 : 0.0;
-        public bool ChecksumVerified { get; init; }
+        public double BandwidthSavedRatio => TotalBytes > 0 ? (double)LocalReusedBytes / TotalBytes * 100.0 : 0.0;
+        public ulong XxHash64 { get; init; }
+        public string Sha256 { get; init; } = string.Empty;
     }
 
     public static class ZSyncSyncEngine
     {
-        /// <summary>
-        /// Synchronizes and reconstructs the target file with atomic in-place safety:
-        /// constructs into a temporary sibling file (.zsnew), verifies checksum, atomically switches places,
-        /// and cleans up all leftovers so only the clean patched target file remains.
-        /// </summary>
         public static async Task<ZSyncResult> SyncAsync(
             ZSyncControlFile control,
             IByteRangeSource rangeSource,
-            string? localSourceFile,
             string destinationPath,
-            IProgress<double>? progress = null,
+            string? localSourcePath = null,
+            IProgress<ZSyncProgressReport>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            if (control == null) throw new ArgumentNullException(nameof(control));
-            if (rangeSource == null) throw new ArgumentNullException(nameof(rangeSource));
-            if (string.IsNullOrWhiteSpace(destinationPath)) throw new ArgumentNullException(nameof(destinationPath));
-
             var destDir = Path.GetDirectoryName(destinationPath);
             if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
             {
                 Directory.CreateDirectory(destDir);
             }
 
-            // In-place auto-detection: if localSourceFile not provided, use destinationPath if it already exists
-            var effectiveSource = localSourceFile;
+            var effectiveSource = localSourcePath;
             if (string.IsNullOrEmpty(effectiveSource) && File.Exists(destinationPath))
             {
                 effectiveSource = destinationPath;
             }
 
-            // Always assemble into a temporary working file in the same directory (enabling atomic filesystem move)
+            // Assemble into a temporary sibling working file
             var workingTempPath = destinationPath + ".zsnew." + Guid.NewGuid().ToString("N")[..8];
 
             // 1. Match local existing files against control file
@@ -79,29 +82,47 @@ namespace ZSync.Core.Engine
 
             try
             {
-                using (var destStream = new FileStream(workingTempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 131072, useAsync: true))
+                var xxHashState = new FastXxHash64.State();
+                using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                using var sha1 = (control.Format == ControlFileFormat.LegacyZSync && !string.IsNullOrEmpty(control.Sha1))
+                    ? IncrementalHash.CreateHash(HashAlgorithmName.SHA1)
+                    : null;
+                var checkChecksum = (control.Format == ControlFileFormat.HDiffPatch && control.NewDataChecksum.Length > 0)
+                    ? new HDiffPatchCheckChecksum(control.ChecksumType, control.NewDataChecksum.Length)
+                    : null;
+
+                using (var destStream = new FileStream(workingTempPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, bufferSize: 131072, useAsync: true))
                 {
                     int totalBlocks = control.Blocks.Count;
                     int processedBlocks = 0;
+
+                    var compressor = GetCompressor(control.CompressType);
 
                     foreach (var block in control.Blocks)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
+                        byte[] blockData;
                         if (matchResult.MatchedBlocks.TryGetValue(block.BlockIndex, out var matched))
                         {
-                            // Block found locally in base file!
+                            // Block found locally
                             localStream!.Seek(matched.SourceOffset, SeekOrigin.Begin);
-                            var buffer = new byte[matched.Length];
-                            int read = await localStream.ReadAsync(buffer.AsMemory(0, matched.Length), cancellationToken).ConfigureAwait(false);
-                            await destStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                            blockData = new byte[matched.Length];
+                            int read = 0;
+                            while (read < matched.Length)
+                            {
+                                int r = await localStream.ReadAsync(blockData.AsMemory(read, matched.Length - read), cancellationToken).ConfigureAwait(false);
+                                if (r == 0) break;
+                                read += r;
+                            }
+                            await destStream.WriteAsync(blockData.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
 
                             localReusedBytes += read;
                         }
                         else
                         {
-                            // Block missing locally: download range from remote/SMB source
-                            if (control.IsGzipCompressed)
+                            // Block missing: download range from remote source
+                            if (block.IsCompressed && compressor != null)
                             {
                                 var compressedChunk = await rangeSource.ReadRangeAsync(
                                     block.CompressedOffset,
@@ -110,77 +131,130 @@ namespace ZSync.Core.Engine
 
                                 downloadedBytes += compressedChunk.Length;
 
-                                // Decompress on the fly
-                                using var chunkMs = new MemoryStream(compressedChunk);
-                                using var deflate = new DeflateStream(chunkMs, CompressionMode.Decompress);
-                                await deflate.CopyToAsync(destStream, cancellationToken).ConfigureAwait(false);
+                                byte[]? dict = null;
+                                if (destStream.Position > 0)
+                                {
+                                    long maxDict = control.DictSize > 0 ? (long)control.DictSize : 65536L;
+                                    int dictLen = (int)Math.Min(destStream.Position, maxDict);
+                                    dict = new byte[dictLen];
+                                    long curPos = destStream.Position;
+                                    await destStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                                    destStream.Seek(curPos - dictLen, SeekOrigin.Begin);
+                                    int dRead = 0;
+                                    while (dRead < dictLen)
+                                    {
+                                        int r = await destStream.ReadAsync(dict.AsMemory(dRead, dictLen - dRead), cancellationToken).ConfigureAwait(false);
+                                        if (r == 0) break;
+                                        dRead += r;
+                                    }
+                                    destStream.Seek(curPos, SeekOrigin.Begin);
+                                }
+
+                                blockData = compressor.Decompress(compressedChunk, block.UncompressedLength, dict);
+                                await destStream.WriteAsync(blockData.AsMemory(), cancellationToken).ConfigureAwait(false);
                             }
                             else
                             {
-                                var rawChunk = await rangeSource.ReadRangeAsync(
+                                blockData = await rangeSource.ReadRangeAsync(
                                     block.UncompressedOffset,
                                     block.UncompressedLength,
                                     cancellationToken).ConfigureAwait(false);
 
-                                downloadedBytes += rawChunk.Length;
-                                await destStream.WriteAsync(rawChunk, cancellationToken).ConfigureAwait(false);
+                                downloadedBytes += blockData.Length;
+                                await destStream.WriteAsync(blockData.AsMemory(), cancellationToken).ConfigureAwait(false);
                             }
                         }
 
+                        // Feed streaming hashes
+                        xxHashState.Update(blockData);
+                        sha256.AppendData(blockData);
+                        sha1?.AppendData(blockData);
+
+                        if (checkChecksum != null)
+                        {
+                            byte[] blockStrong;
+                            if (control.ChecksumType.StartsWith("md5", StringComparison.OrdinalIgnoreCase))
+                            {
+                                blockStrong = MD5.HashData(blockData);
+                            }
+                            else if (control.ChecksumType.StartsWith("sha256", StringComparison.OrdinalIgnoreCase))
+                            {
+                                blockStrong = SHA256.HashData(blockData);
+                            }
+                            else
+                            {
+                                blockStrong = new byte[8];
+                                BinaryPrimitives.WriteUInt64LittleEndian(blockStrong, FastXxHash64.Hash(blockData));
+                            }
+                            checkChecksum.AppendBlock(block.BlockIndex, blockStrong);
+                        }
+
                         processedBlocks++;
-                        progress?.Report((double)processedBlocks / totalBlocks * 100.0);
+                        progress?.Report(new ZSyncProgressReport
+                        {
+                            TotalBlocks = totalBlocks,
+                            ProcessedBlocks = processedBlocks,
+                            LocalReusedBytes = localReusedBytes,
+                            DownloadedBytes = downloadedBytes,
+                            TotalBytes = control.FileLength
+                        });
                     }
-
-                    await destStream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                // 2. Verify assembled temporary file checksums before replacing target
-                bool verified = false;
-                using (var destVerifyStream = File.OpenRead(workingTempPath))
+                // Verify file integrity
+                if (checkChecksum != null)
                 {
-                    using var sha256 = SHA256.Create();
-                    var hashBytes = await sha256.ComputeHashAsync(destVerifyStream, cancellationToken).ConfigureAwait(false);
-                    var sha = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
-
-                    verified = string.Equals(sha, control.Sha256, StringComparison.OrdinalIgnoreCase);
+                    byte[] computedCheck = checkChecksum.GetResult();
+                    if (!MemoryExtensions.SequenceEqual<byte>(computedCheck, control.NewDataChecksum))
+                        throw new InvalidDataException("Verification failed: HDiffPatch check checksum mismatch on reconstructed file.");
                 }
-
-                // 3. Atomic swap: if verified, switch place and replace target file
-                if (verified)
+                if (sha1 != null)
                 {
-                    // Close local source stream first if it was referencing destinationPath
-                    if (localStream != null)
-                    {
-                        await localStream.DisposeAsync().ConfigureAwait(false);
-                        localStream = null;
-                    }
-
-                    File.Move(workingTempPath, destinationPath, overwrite: true);
-                    swapSuccess = true;
+                    byte[] computedSha1 = sha1.GetHashAndReset();
+                    string hex = Convert.ToHexString(computedSha1).ToLowerInvariant();
+                    if (!string.Equals(hex, control.Sha1, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("Verification failed: SHA-1 mismatch on reconstructed file.");
                 }
+
+                ulong fullXxHash = xxHashState.Digest();
+                string fullSha256 = Convert.ToHexString(sha256.GetHashAndReset()).ToLowerInvariant();
+
+                // Close local stream before moving
+                localStream?.Dispose();
+                localStream = null;
+
+                // Atomic replace
+                File.Move(workingTempPath, destinationPath, overwrite: true);
+                swapSuccess = true;
 
                 return new ZSyncResult
                 {
-                    DestinationPath = destinationPath,
+                    TargetPath = destinationPath,
                     TotalBytes = control.FileLength,
                     LocalReusedBytes = localReusedBytes,
                     DownloadedBytes = downloadedBytes,
-                    ChecksumVerified = verified && swapSuccess
+                    XxHash64 = fullXxHash,
+                    Sha256 = fullSha256
                 };
             }
             finally
             {
-                if (localStream != null)
-                {
-                    await localStream.DisposeAsync().ConfigureAwait(false);
-                }
-
-                // Clean up temporary leftover files
+                localStream?.Dispose();
                 if (!swapSuccess && File.Exists(workingTempPath))
                 {
                     try { File.Delete(workingTempPath); } catch { }
                 }
             }
+        }
+
+        private static IBlockCompressor? GetCompressor(string type)
+        {
+            return type switch
+            {
+                "zstd" or "zstdD" => ZstdBlockCompressor.Instance,
+                "zlib" or "zlibD" or "ldef" or "gzip" or "gzipD" => DeflateBlockCompressor.Instance,
+                _ => null
+            };
         }
     }
 }

@@ -8,6 +8,7 @@ namespace ZSync.Core.Hashing
     /// <summary>
     /// Pure C# implementation of 64-bit xxHash (xxHash64).
     /// Extreme throughput (>10 GB/s on modern CPUs) with zero external dependencies.
+    /// Supports one-shot span hashing and incremental streaming state.
     /// </summary>
     public static class FastXxHash64
     {
@@ -115,14 +116,148 @@ namespace ZSync.Core.Hashing
 
         public static async System.Threading.Tasks.Task<ulong> HashStreamAsync(Stream stream, ulong seed = 0, System.Threading.CancellationToken cancellationToken = default)
         {
+            var state = new State(seed);
             var buffer = new byte[65536];
-            using var ms = new MemoryStream();
             int read;
             while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false)) > 0)
             {
-                ms.Write(buffer, 0, read);
+                state.Update(buffer.AsSpan(0, read));
             }
-            return Hash(ms.ToArray(), seed);
+            return state.Digest();
+        }
+
+        public struct State
+        {
+            private ulong _v1;
+            private ulong _v2;
+            private ulong _v3;
+            private ulong _v4;
+            private ulong _totalLength;
+            private byte[]? _buffer;
+            private int _bufferedSize;
+            private readonly ulong _seed;
+
+            public State(ulong seed = 0)
+            {
+                _seed = seed;
+                _v1 = seed + Prime1 + Prime2;
+                _v2 = seed + Prime2;
+                _v3 = seed;
+                _v4 = seed - Prime1;
+                _totalLength = 0;
+                _buffer = new byte[32];
+                _bufferedSize = 0;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private void EnsureInitialized()
+            {
+                if (_buffer == null)
+                {
+                    _v1 = _seed + Prime1 + Prime2;
+                    _v2 = _seed + Prime2;
+                    _v3 = _seed;
+                    _v4 = _seed - Prime1;
+                    _buffer = new byte[32];
+                }
+            }
+
+            public void Update(ReadOnlySpan<byte> input)
+            {
+                EnsureInitialized();
+                _totalLength += (ulong)input.Length;
+
+                if (_bufferedSize + input.Length < 32)
+                {
+                    input.CopyTo(_buffer.AsSpan(_bufferedSize));
+                    _bufferedSize += input.Length;
+                    return;
+                }
+
+                if (_bufferedSize > 0)
+                {
+                    int fill = 32 - _bufferedSize;
+                    input.Slice(0, fill).CopyTo(_buffer.AsSpan(_bufferedSize));
+                    _v1 = Round(_v1, ReadUInt64LittleEndian(_buffer.AsSpan(0, 8)));
+                    _v2 = Round(_v2, ReadUInt64LittleEndian(_buffer.AsSpan(8, 8)));
+                    _v3 = Round(_v3, ReadUInt64LittleEndian(_buffer.AsSpan(16, 8)));
+                    _v4 = Round(_v4, ReadUInt64LittleEndian(_buffer.AsSpan(24, 8)));
+                    input = input.Slice(fill);
+                    _bufferedSize = 0;
+                }
+
+                while (input.Length >= 32)
+                {
+                    _v1 = Round(_v1, ReadUInt64LittleEndian(input.Slice(0, 8)));
+                    _v2 = Round(_v2, ReadUInt64LittleEndian(input.Slice(8, 8)));
+                    _v3 = Round(_v3, ReadUInt64LittleEndian(input.Slice(16, 8)));
+                    _v4 = Round(_v4, ReadUInt64LittleEndian(input.Slice(24, 8)));
+                    input = input.Slice(32);
+                }
+
+                if (input.Length > 0)
+                {
+                    input.CopyTo(_buffer.AsSpan(0));
+                    _bufferedSize = input.Length;
+                }
+            }
+
+            public ulong Digest()
+            {
+                EnsureInitialized();
+                ulong h64;
+
+                if (_totalLength >= 32)
+                {
+                    h64 = BitOperations.RotateLeft(_v1, 1) +
+                          BitOperations.RotateLeft(_v2, 7) +
+                          BitOperations.RotateLeft(_v3, 12) +
+                          BitOperations.RotateLeft(_v4, 18);
+
+                    h64 = MergeRound(h64, _v1);
+                    h64 = MergeRound(h64, _v2);
+                    h64 = MergeRound(h64, _v3);
+                    h64 = MergeRound(h64, _v4);
+                }
+                else
+                {
+                    h64 = _seed + Prime5;
+                }
+
+                h64 += _totalLength;
+
+                ReadOnlySpan<byte> remaining = _buffer.AsSpan(0, _bufferedSize);
+                while (remaining.Length >= 8)
+                {
+                    ulong k1 = Round(0, ReadUInt64LittleEndian(remaining.Slice(0, 8)));
+                    h64 ^= k1;
+                    h64 = BitOperations.RotateLeft(h64, 27) * Prime1 + Prime4;
+                    remaining = remaining.Slice(8);
+                }
+
+                if (remaining.Length >= 4)
+                {
+                    h64 ^= (ulong)ReadUInt32LittleEndian(remaining.Slice(0, 4)) * Prime1;
+                    h64 = BitOperations.RotateLeft(h64, 23) * Prime2 + Prime3;
+                    remaining = remaining.Slice(4);
+                }
+
+                while (remaining.Length > 0)
+                {
+                    h64 ^= remaining[0] * Prime5;
+                    h64 = BitOperations.RotateLeft(h64, 11) * Prime1;
+                    remaining = remaining.Slice(1);
+                }
+
+                // Avalanche mix
+                h64 ^= h64 >> 33;
+                h64 *= Prime2;
+                h64 ^= h64 >> 29;
+                h64 *= Prime3;
+                h64 ^= h64 >> 32;
+
+                return h64;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
