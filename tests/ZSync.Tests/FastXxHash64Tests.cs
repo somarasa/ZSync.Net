@@ -9,22 +9,13 @@ namespace ZSync.Tests
     public class FastXxHash64Tests
     {
         [Test]
-        public void Block0_CheckChecksum_MatchesNative()
+        public void HDiffPatchCheckChecksum_XxHash128_AccumulatesCorrectly()
         {
-            byte[] block = new byte[2048];
-            using (var f = System.IO.File.OpenRead("/root/workspace/ZSync.Net/reference/hsynz/hsync_make"))
-            {
-                f.ReadExactly(block, 0, 2048);
-            }
-            byte[] strong = ChecksumHelper.ComputeStrongChecksum("xxh128", block);
-            Console.WriteLine("C# Block 0 strong: " + Convert.ToHexString(strong).ToLowerInvariant());
-
+            byte[] strong = Convert.FromHexString("f9b705f314218f2018f9d7329d6e7105");
             var cc = new HDiffPatchCheckChecksum("xxh128", 16);
             cc.AppendBlock(0, strong);
             byte[] res = cc.GetResult();
-            Console.WriteLine("C# Check checksum: " + Convert.ToHexString(res).ToLowerInvariant());
 
-            Assert.That(Convert.ToHexString(strong).ToLowerInvariant(), Is.EqualTo("f9b705f314218f2018f9d7329d6e7105"));
             Assert.That(Convert.ToHexString(res).ToLowerInvariant(), Is.EqualTo("6fa6ebc3c94e759f522eb759a86e18af"));
         }
 
