@@ -26,7 +26,17 @@ namespace ZSync.Core.Compression
         {
             try
             {
-                using var inputMs = new MemoryStream(compressed.ToArray());
+                byte[] compBytes = compressed.ToArray();
+                if (compBytes.Length >= 4 &&
+                    compBytes[^4] == 0x00 && compBytes[^3] == 0x00 &&
+                    compBytes[^2] == 0xFF && compBytes[^1] == 0xFF)
+                {
+                    Array.Resize(ref compBytes, compBytes.Length + 2);
+                    compBytes[^2] = 0x03;
+                    compBytes[^1] = 0x00;
+                }
+
+                using var inputMs = new MemoryStream(compBytes);
                 using var deflate = new DeflateStream(inputMs, CompressionMode.Decompress);
                 var output = new byte[uncompressedSize];
                 int totalRead = 0;

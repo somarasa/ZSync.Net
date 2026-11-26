@@ -1,6 +1,6 @@
 # ZSync.Net
 
-[![Tests Passing](https://img.shields.io/badge/tests-41%20passing%20(100%25)-brightgreen.svg?logo=github-actions&logoColor=white)](https://github.com/somarasa/ZSync.Net/actions)
+[![Tests Passing](https://img.shields.io/badge/tests-50%20passing%20(100%25)-brightgreen.svg?logo=github-actions&logoColor=white)](https://github.com/somarasa/ZSync.Net/actions)
 [![.NET 8.0 LTS](https://img.shields.io/badge/.NET-8.0%20LTS-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![.NET 10.0](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)]()
@@ -62,12 +62,16 @@ zsync sync --control https://updates.example.com/Quantum.Worker.dll.hsyni --targ
    - **Reconstruction**: Rebuilds target files in a single write pass, concurrently verifying `HDiffPatchCheckChecksum`, SHA-256, and xxHash64 on the fly with zero second disk pass.
    - **Matcher**: Scans multi-gigabyte seed files using a sliding chunk buffer with constant ~1 MB memory usage.
 
-6. **Universal Checksums & Fast Rolling Hashes**:
+6. **Single-Pass Dual-Control & Inter-Site Replication**:
+   - Concurrently produces an RFC 1952 sync-friendly `.gz` payload, a client control file (`<file>.hsyni`), and an inter-site replication control file (`<file>.gz.hsyni`) in a single streaming pass with zero disk re-reads.
+   - Allows datacenters and edge nodes to delta-sync the `.gz` payload directly between sites, while end clients delta-reconstruct the uncompressed target file from the same `.gz` payload.
+
+7. **Universal Checksums & Fast Rolling Hashes**:
    - First-class support for `xxh128` (XXH3 128-bit, native `hsync_make` default), `md5`, `sha256`, `sha512`, `crc32`, and `xxh64`.
    - 64-bit Adler rolling hash (`FastAdler64`) with 256-word table lookups for $O(1)$ block rolling.
    - Built-in MD5, MD4, and SHA-1 support for full standards compliance.
 
-7. **Atomic In-Place File Patching**:
+8. **Atomic In-Place File Patching**:
    - Safely updates target files in-place: reconstructs into `.zsnew.<guid>`, verifies checksums on the fly, and atomically switches places (`File.Move(..., overwrite: true)`).
    - Zero leftover files on success; destination remains completely intact if interrupted.
 
@@ -105,16 +109,18 @@ ZSync.Net/
 │   │   │   ├── HttpByteRangeSource.cs     # RFC 7233 HTTP Range requests (Range: bytes=X-Y)
 │   │   │   └── ByteRangeSourceFactory.cs  # Automatic transport selector (http/https vs smb/file)
 │   │   └── Engine/
-│   │       ├── ZSyncControlBuilder.cs     # Single-pass streaming generator (.hsyni & .hsynz)
+│   │       ├── ZSyncControlBuilder.cs     # Single-pass streaming generator (.hsyni, .hsynz, dual .gz)
+│   │       ├── ZSyncDualGzipOptions.cs    # Single-pass dual-control & inter-site replication options
 │   │       ├── ZSyncBlockMatcher.cs       # Streaming sliding-window matcher with constant memory
 │   │       └── ZSyncSyncEngine.cs         # Single-pass atomic reconstructor & verifier
-│   └── ZSync.Cli/                         # Standalone CLI tool (make & sync commands)
+│   └── ZSync.Cli/                         # Standalone CLI tool (make, make-dual, & sync commands)
 ├── tests/
-│   └── ZSync.Tests/                       # Comprehensive test suite (41/41 tests passing across .NET 8.0 & 10.0)
+│   └── ZSync.Tests/                       # Comprehensive test suite (50/50 tests passing across .NET 8.0 & 10.0)
 │       ├── FastXxHash64Tests.cs           # xxHash64 correctness & streaming state verification
 │       ├── RollingHashTests.cs            # Adler rolling update equivalence tests
 │       ├── TransportTests.cs              # SMB/File & HTTP Range transport tests
 │       ├── ZSyncControlBuilderTests.cs    # Single-pass generator tests
+│       ├── ZSyncDualGzipTests.cs          # Single-pass dual-control & inter-site replication tests
 │       ├── ZSyncSyncEngineTests.cs        # End-to-end delta sync & verification tests
 │       └── HDiffPatchInteroperabilityTests.cs # Live 2-way interop with native hsync_make / hsync_demo
 ├── ZSync.Net.slnx                         # Solution file
@@ -155,13 +161,23 @@ Quantum.Worker.dll.hsyni               Quantum.Worker.dll.hsynz
 ### 1. Generate Control File & Zstandard Payload (Single Pass)
 ```bash
 # Generate .hsyni and .hsynz with Zstandard compression (default)
-zsync make Quantum.Worker.dll --block-size 4096 --compress zstd --out-dir /dist
+zsync make Quantum.Worker.dll --compress zstd --out-dir /dist
 ```
 Generates at once:
 - `/dist/Quantum.Worker.dll.hsyni` (HDiffPatch control file)
 - `/dist/Quantum.Worker.dll.hsynz` (Zstandard block-compressed payload)
 
-### 2. Synchronize from HTTP/HTTPS
+### 2. Single-Pass Dual-Control & Inter-Site Replication (GZip)
+For large files (e.g. 1 GB+), generate a standard sync-friendly `.gz` payload, a client control file (`<file>.hsyni`), and an inter-site replication control file (`<file>.gz.hsyni`) in a single streaming pass:
+```bash
+zsync make-dual Quantum.Worker.bin --out-dir /dist
+```
+Generates at once:
+- `/dist/Quantum.Worker.bin.gz` (RFC 1952 sync-friendly GZip payload)
+- `/dist/Quantum.Worker.bin.hsyni` (Client control to reconstruct `Quantum.Worker.bin` from `.gz`)
+- `/dist/Quantum.Worker.bin.gz.hsyni` (Inter-site control to delta-replicate `.gz` between servers without decompression)
+
+### 3. Synchronize from HTTP/HTTPS
 ```bash
 zsync sync \
   --control https://updates.example.com/Quantum.Worker.dll.hsyni \
@@ -170,7 +186,7 @@ zsync sync \
   --target /opt/quantum/staging/Quantum.Worker.dll
 ```
 
-### 3. Synchronize from SMB / UNC Network Share
+### 4. Synchronize from SMB / UNC Network Share
 ```bash
 zsync sync \
   --control \\fileserver\updates\Quantum.Worker.dll.hsyni \
@@ -179,7 +195,7 @@ zsync sync \
   --target /opt/quantum/staging/Quantum.Worker.dll
 ```
 
-### 4. Atomic In-Place Patching (Single `--target` Argument)
+### 5. Atomic In-Place Patching (Single `--target` Argument)
 ```bash
 # When --source is omitted, ZSync automatically uses the existing target file as the base,
 # streams delta chunks into an atomic sibling (.zsnew.xxxx), verifies checksum, switches places,
@@ -213,6 +229,21 @@ Console.WriteLine($"Blocks:     {summary.BlockCount}");
 Console.WriteLine($"xxHash64:   0x{summary.XxHash64:X16}");
 ```
 
+### Generating Dual-Control GZip (Client + Inter-Site Replication)
+```csharp
+using ZSync.Core.Engine;
+
+// Simultaneously generates client control (.hsyni), sync-friendly GZip (.gz),
+// and inter-site replication control (.gz.hsyni) in a single pass over the source file
+var summary = await ZSyncControlBuilder.GenerateDualGzipAsync(
+    inputFilePath: "Quantum.Worker.bin",
+    outputDirectory: "/dist");
+
+Console.WriteLine($"GZip Payload:       {summary.GzPayloadPath}");
+Console.WriteLine($"Client Control:     {summary.ClientControlPath}");
+Console.WriteLine($"Inter-Site Control: {summary.InterSiteControlPath}");
+```
+
 ### Syncing / Reconstructing Files
 ```csharp
 using ZSync.Core.Engine;
@@ -230,7 +261,7 @@ var result = await ZSyncSyncEngine.SyncAsync(
     control: control,
     rangeSource: rangeSource,
     destinationPath: "/opt/quantum/Quantum.Worker.dll",
-    localSourceFile: "/opt/quantum/Quantum.Worker.dll");
+    localSourcePath: "/opt/quantum/Quantum.Worker.dll");
 
 Console.WriteLine($"Bandwidth saved: {result.BandwidthSavedRatio:F1}%");
 Console.WriteLine($"SHA256:          {result.Sha256}");

@@ -26,6 +26,10 @@ namespace ZSync.Cli
                     case "create":
                         return await HandleMakeAsync(args).ConfigureAwait(false);
 
+                    case "make-dual":
+                    case "dual":
+                        return await HandleMakeDualAsync(args).ConfigureAwait(false);
+
                     case "sync":
                         return await HandleSyncAsync(args).ConfigureAwait(false);
 
@@ -204,19 +208,102 @@ namespace ZSync.Cli
             return 0;
         }
 
+        private static async Task<int> HandleMakeDualAsync(string[] args)
+        {
+            string? inputFile = null;
+            string? outDir = null;
+            int blockSize = 4096;
+            int gzBlockSize = 4096;
+            string checksumType = "xxh128";
+            int level = 6;
+
+            for (int i = 1; i < args.Length; i++)
+            {
+                var a = args[i];
+                if ((a.Equals("--input", StringComparison.OrdinalIgnoreCase) || a.Equals("-i", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                {
+                    inputFile = args[++i];
+                }
+                else if ((a.Equals("--out-dir", StringComparison.OrdinalIgnoreCase) || a.Equals("-o", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                {
+                    outDir = args[++i];
+                }
+                else if (a.Equals("--block-size", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    int.TryParse(args[++i], out blockSize);
+                }
+                else if (a.Equals("--gz-block-size", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    int.TryParse(args[++i], out gzBlockSize);
+                }
+                else if (a.Equals("--checksum", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    checksumType = args[++i];
+                }
+                else if ((a.Equals("--level", StringComparison.OrdinalIgnoreCase) || a.Equals("-l", StringComparison.OrdinalIgnoreCase)) && i + 1 < args.Length)
+                {
+                    int.TryParse(args[++i], out level);
+                }
+                else if (!a.StartsWith("-") && inputFile == null)
+                {
+                    inputFile = a;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
+            {
+                Console.WriteLine("Error: Valid input file is required.");
+                Console.WriteLine("Usage: zsync make-dual <input-file> [--out-dir <dir>] [--block-size 4096] [--gz-block-size 4096] [--checksum xxh128]");
+                return 1;
+            }
+
+            Console.WriteLine($"[ZSync] Processing '{inputFile}' in single streaming pass...");
+            Console.WriteLine($"  Client Block Size:      {blockSize} bytes");
+            Console.WriteLine($"  Inter-Site Block Size:  {gzBlockSize} bytes");
+            Console.WriteLine($"  Checksum Algorithm:     {checksumType}");
+            Console.WriteLine($"  Compression Level:      {level}");
+
+            var options = new ZSyncDualGzipOptions
+            {
+                BlockSize = blockSize,
+                GzBlockSize = gzBlockSize,
+                ChecksumType = checksumType,
+                CompressionLevel = level
+            };
+
+            var summary = await ZSyncControlBuilder.GenerateDualGzipAsync(inputFile, outDir, options).ConfigureAwait(false);
+
+            Console.WriteLine("\n[ZSync] Single-pass dual-control generation completed successfully:");
+            Console.WriteLine($"  GZip Payload:           {summary.GzPayloadPath} ({summary.GzPayloadSize / 1024.0 / 1024.0:F2} MB, {summary.CompressionRatio:F1}% of original)");
+            Console.WriteLine($"  Client Control (.hsyni):{summary.ClientControlPath} ({summary.ClientBlockCount:N0} blocks)");
+            Console.WriteLine($"  Inter-Site Control:     {summary.InterSiteControlPath} ({summary.GzBlockCount:N0} blocks)");
+            Console.WriteLine($"  Source xxHash64:        0x{summary.UncompressedXxHash64:X16}");
+            Console.WriteLine($"  Payload xxHash64:       0x{summary.GzXxHash64:X16}");
+            Console.WriteLine($"  GZip CRC-32:            0x{summary.Crc32:X8}");
+
+            return 0;
+        }
+
         private static void PrintHelp()
         {
             Console.WriteLine("ZSync.Net — High-Performance HDiffPatch & ZSync Delta Synchronization Tool\n");
             Console.WriteLine("Usage:");
             Console.WriteLine("  zsync make <file> [options]");
-            Console.WriteLine("      --block-size <bytes>   Block size in bytes (default: 4096)");
-            Console.WriteLine("      --compress <type>      Compression type: zstd, zlib (default: zstd)");
-            Console.WriteLine("      --out-dir <directory>  Output destination directory");
+            Console.WriteLine("      --block-size <bytes>      Block size in bytes (default: 4096)");
+            Console.WriteLine("      --compress <type>         Compression type: zstd, zlib (default: zstd)");
+            Console.WriteLine("      --out-dir <directory>     Output destination directory");
+            Console.WriteLine();
+            Console.WriteLine("  zsync make-dual <file> [options]");
+            Console.WriteLine("      --block-size <bytes>      Client reconstruction block size (default: 4096)");
+            Console.WriteLine("      --gz-block-size <bytes>   Inter-site replication block size (default: 4096)");
+            Console.WriteLine("      --checksum <type>         Checksum type: xxh128, xxh64, md5, sha256 (default: xxh128)");
+            Console.WriteLine("      --level <1-9>             Gzip compression level (default: 6)");
+            Console.WriteLine("      --out-dir <directory>     Output destination directory");
             Console.WriteLine();
             Console.WriteLine("  zsync sync --control <file.hsyni|file.zsync|url> [options]");
-            Console.WriteLine("      --target <file>        Target destination output file");
-            Console.WriteLine("      --source <file>        Local seed file to scan for identical chunks");
-            Console.WriteLine("      --payload <url|path>   Source payload (.hsynz) location (HTTP Range or SMB/File)");
+            Console.WriteLine("      --target <file>           Target destination output file");
+            Console.WriteLine("      --source <file>           Local seed file to scan for identical chunks");
+            Console.WriteLine("      --payload <url|path>      Source payload (.hsynz/.gz) location (HTTP Range or SMB/File)");
         }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -205,6 +206,10 @@ namespace ZSync.Core.Engine
             if (outPartBytes * 8 > outPartBits)
             {
                 partBuf[0] &= (byte)((1 << (outPartBits & 7)) - 1);
+            }
+            if (outPartBytes >= 8)
+            {
+                return BinaryPrimitives.ReadUInt64LittleEndian(partBuf);
             }
             ulong v = 0;
             for (int i = 0; i < outPartBytes; i++)
