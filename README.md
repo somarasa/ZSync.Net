@@ -168,7 +168,7 @@ Generates at once:
 - `/dist/Quantum.Worker.dll.hsynz` (Zstandard block-compressed payload)
 
 ### 2. Single-Pass Dual-Control & Inter-Site Replication (GZip)
-For large files (e.g. 1 GB+), generate a standard sync-friendly `.gz` payload, a client control file (`<file>.hsyni`), and an inter-site replication control file (`<file>.gz.hsyni`) in a single streaming pass:
+Generate a standard sync-friendly `.gz` payload, a client control file (`<file>.hsyni`), and an inter-site replication control file (`<file>.gz.hsyni`) in a single streaming pass:
 ```bash
 zsync make-dual Quantum.Worker.bin --out-dir /dist
 ```
